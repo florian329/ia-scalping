@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--out", default="ppo_scalping_policy.pth")
     parser.add_argument("--news-blackouts", default=None, help="CSV start,end (ISO) par ligne")
     parser.add_argument("--reward-scale", type=float, default=0.001, help="Normalisation du reward (stabilise la value loss)")
+    parser.add_argument("--execution", default="taker", choices=["taker", "maker"])
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -54,6 +55,7 @@ def main():
         sequence_length=args.sequence_length,
         filters=filters,
         reward_scale=args.reward_scale,
+        execution=args.execution,
     )
 
     import os

@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--capital", type=float, default=10000.0)
     parser.add_argument("--max-ticks", type=int, default=None)
     parser.add_argument("--confidence", type=float, default=0.5)
+    parser.add_argument("--execution", default="taker", choices=["taker", "maker"])
     parser.add_argument("--journal", default="trades_journal.csv")
     parser.add_argument("--news-blackouts", default=None, help="CSV start,end (ISO) par ligne")
     args = parser.parse_args()
@@ -98,6 +99,7 @@ def main():
         confidence_threshold=args.confidence,
         norm_stats=norm_stats,
         filters=filters,
+        execution=args.execution,
         journal_path=args.journal,
         poll_seconds=0.0 if args.feed == "csv" else 0.2,
     )
@@ -110,6 +112,7 @@ def main():
     if "reconnect_count" in result:
         print(f"Reconnexions feed  : {result['reconnect_count']}")
     print(f"Journal des trades : {args.journal}")
+    print(f"Execution           : {result.get('execution')} | fills maker={result.get('maker_fills')} | annulations={result.get('maker_cancels')}")
 
 
 if __name__ == "__main__":

@@ -83,6 +83,8 @@ d'ordres au marché :
   stop est toujours prémium).
 - Le rapport inclut `maker_fills` / `maker_cancels` pour mesurer le taux de
   remplissage.
+- Disponible partout : backtester, environnement RL, boucle live
+  (`run_live.py --execution maker`) et entraînement (`train_ppo.py --execution maker`).
 
 Sur l'échantillon BTC réel (toujours-long naïf, 3 min) : taker = −1,88 %
 (198 $ de frais, IC 95 % entièrement négatif) vs maker = −0,58 % (68 $ de

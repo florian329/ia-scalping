@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backtester import run_backtest
 from calibration import expected_calibration_error, fit_temperature
 from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM, build_window_dataset
+from data_feed import ListFeed
 from drift_monitor import FeatureDriftMonitor, WinRateDriftMonitor
 from model_pytorch import ScalpingMultimodalNet
 from pipeline_data import build_features
@@ -272,6 +273,43 @@ class TestMakerExecution(unittest.TestCase):
         while not done:
             _, reward, done, _ = env.step(1)
         self.assertNotEqual(env.realized_pnl, 0.0)
+
+
+class TestMakerLiveLoop(unittest.TestCase):
+    def test_boucle_live_maker_remplit_et_compte(self):
+        from live_paper_trading import LivePaperTradingLoop
+
+        model = ConstantModel(1)
+        rng = np.random.default_rng(0)
+        n = 600
+        prices = 98000.0 + 0.5 * ((-1) ** np.arange(n)) + np.cumsum(rng.normal(0, 0.2, n))
+        ticks = []
+        for i, p in enumerate(prices):
+            tick = {
+                "timestamp": pd.Timestamp("2026-01-05", tz="UTC") + pd.Timedelta(milliseconds=10 * i),
+                "last_price": float(p),
+                "last_volume": 1.0,
+                "best_bid": float(p) - 0.5,
+                "best_ask": float(p) + 0.5,
+            }
+            for j in range(1, 6):
+                tick[f"bid_size_{j}"] = 50.0
+                tick[f"ask_size_{j}"] = 50.0
+            ticks.append(tick)
+        loop = LivePaperTradingLoop(
+            model,
+            asset="BTC",
+            feed=ListFeed(ticks),
+            initial_capital=10000.0,
+            confidence_threshold=0.0,
+            execution="maker",
+            poll_seconds=0.0,
+        )
+        result = loop.run()
+        self.assertEqual(result["execution"], "maker")
+        self.assertIn("maker_fills", result)
+        self.assertIn("maker_cancels", result)
+        self.assertGreater(result["maker_fills"] + result["maker_cancels"], 0)
 
 if __name__ == "__main__":
     unittest.main()

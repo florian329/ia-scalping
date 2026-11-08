@@ -99,6 +99,8 @@ class LivePaperTradingLoop:
         max_consecutive_losses=3,
         cooldown_ticks=50,
         drift_monitor=None,
+        execution="taker",
+        maker_timeout_ticks=10,
     ):
         self.model = model
         self.asset = asset
@@ -125,6 +127,11 @@ class LivePaperTradingLoop:
         self.cooldown_until = -1
         self.tick_count = 0
         self.drift_monitor = drift_monitor
+        self.execution = execution
+        self.maker_timeout_ticks = maker_timeout_ticks
+        self.pending = None
+        self.maker_fills = 0
+        self.maker_cancels = 0
 
         if asset != "BTC":
             raise ValueError("Seul le BTC est supporte par cette strategie.")
@@ -168,16 +175,25 @@ class LivePaperTradingLoop:
         if len(self.raw_history) - pos.entry_index >= self.max_holding_ticks:
             self._close(price, "timeout")
 
+    def _fees(self, price, qty, fee_rate=None):
+        rate = self.costs.get("commission_rate", 0.0) if fee_rate is None else fee_rate
+        return self.costs.get("commission_per_qty", 0.0) * qty + rate * price * qty
+
     def _close(self, fill_price, reason):
         pos = self.position
-        slip = self.costs["slippage"]
-        fill = fill_price - slip if pos.side == LONG else fill_price + slip
-        fees = self.costs["commission_per_qty"] * pos.qty
+        maker_exit = self.execution == "maker" and reason == "take_profit"
+        if maker_exit:
+            fill = fill_price
+            fees = self._fees(fill, pos.qty, fee_rate=self.costs.get("maker_fee_rate", 0.0))
+        else:
+            slip = self.costs["slippage"]
+            fill = fill_price - slip if pos.side == LONG else fill_price + slip
+            fees = self._fees(fill, pos.qty)
         self.capital += pos.pnl_fill(fill) - fees
         pos.exit_price = fill
         pos.exit_reason = reason
         self.trades.append(pos)
-        net = pos.pnl_fill(fill)
+        net = pos.pnl_fill(fill) - fees
         if net < 0:
             self.consecutive_losses += 1
         else:
@@ -232,9 +248,17 @@ class LivePaperTradingLoop:
         qty = self.money_manager.calculate_position_size(self.capital, atr, self.atr_multiplier_sl)
         if qty <= 0:
             return
+        side = LONG if action == 1 else SHORT
+        last_tick = self.raw_history[-1] if self.raw_history else {}
+        if self.execution == "maker":
+            if side == LONG:
+                limit = float(last_tick.get("best_bid", price - self.costs["spread"] / 2.0))
+            else:
+                limit = float(last_tick.get("best_ask", price + self.costs["spread"] / 2.0))
+            self.pending = {"side": side, "limit": limit, "placed_at": self.tick_count}
+            return
         half_spread = self.costs["spread"] / 2.0
         slip = self.costs["slippage"]
-        side = LONG if action == 1 else SHORT
         stop_dist = self.money_manager.stop_distance(atr, self.atr_multiplier_sl)
         if side == LONG:
             entry = price + half_spread + slip
@@ -244,8 +268,49 @@ class LivePaperTradingLoop:
             entry = price - half_spread - slip
             stop = entry + stop_dist
             tp = entry - stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
-        self.capital -= self.costs["commission_per_qty"] * qty
+        self.capital -= self._fees(entry, qty)
         self.position = Trade(side, t_index, entry, qty, stop, tp)
+
+    def _check_pending(self, price, t_index):
+        if self.pending is None:
+            return
+        if self.position is not None:
+            self.pending = None
+            self.maker_cancels += 1
+            return
+        order = self.pending
+        filled = (
+            (order["side"] == LONG and price <= order["limit"])
+            or (order["side"] == SHORT and price >= order["limit"])
+        )
+        if filled:
+            atr = self._current_atr()
+            qty = self.money_manager.calculate_position_size(
+                self.capital, atr, self.atr_multiplier_sl, price=order["limit"]
+            )
+            if qty > 0:
+                stop_dist = self.money_manager.stop_distance(atr, self.atr_multiplier_sl)
+                entry = order["limit"]
+                if order["side"] == LONG:
+                    stop = entry - stop_dist
+                    tp = entry + stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+                else:
+                    stop = entry + stop_dist
+                    tp = entry - stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+                self.capital -= self._fees(
+                    entry, qty, fee_rate=self.costs.get("maker_fee_rate", 0.0)
+                )
+                self.position = Trade(order["side"], t_index, entry, qty, stop, tp)
+                self.maker_fills += 1
+            self.pending = None
+        elif self.tick_count - order["placed_at"] >= self.maker_timeout_ticks:
+            self.pending = None
+            self.maker_cancels += 1
+
+    def _current_atr(self):
+        frame = self._build_frame()
+        feats = build_features(frame)
+        return float(feats["ATR_Tick"].iloc[-1])
 
     def step(self, tick, t_index=None):
         """Traite un tick brut (dict avec last_price, last_volume, bid/ask sizes...)."""
@@ -255,7 +320,10 @@ class LivePaperTradingLoop:
             return
         price = tick["last_price"]
         self._manage_position(price)
-        if self.position is None and not self._kill_switch_triggered():
+        if self.position is not None:
+            self.pending = None
+        self._check_pending(price, t_index or len(self.raw_history))
+        if self.position is None and self.pending is None and not self._kill_switch_triggered():
             if self.tick_count < self.cooldown_until:
                 return
             if self.max_trades is not None and len(self.trades) >= self.max_trades:
@@ -289,6 +357,9 @@ class LivePaperTradingLoop:
             "trades": self.trades,
             "last_inference_ms": self.last_inference_ms,
             "latency": self.latency.stats(),
+            "execution": self.execution,
+            "maker_fills": self.maker_fills,
+            "maker_cancels": self.maker_cancels,
         }
         if hasattr(self.feed, "reconnect_count"):
             result["reconnect_count"] = self.feed.reconnect_count

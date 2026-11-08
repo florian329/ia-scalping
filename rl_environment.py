@@ -19,6 +19,7 @@ class ScalpingEnv:
         self,
         df,
         asset="BTC",
+        _validate_asset=True,
         sequence_length=20,
         initial_capital=10000.0,
         risk_per_trade=0.005,
@@ -36,8 +37,9 @@ class ScalpingEnv:
         min_qty=0.0,
         reward_scale=1.0,
     ):
-        point_values = {"BTC": 1.0, "NQ": 20.0, "ES": 50.0, "XAU": 100.0}
-        self.point_value = point_values.get(asset, 1.0)
+        if asset != "BTC":
+            raise ValueError("Seul le BTC est supporte par cette strategie.")
+        self.point_value = 1.0
         self.sequence_length = sequence_length
         self.initial_capital = initial_capital
         self.risk_per_trade = risk_per_trade

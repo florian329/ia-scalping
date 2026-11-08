@@ -19,7 +19,6 @@ Format attendu (une ligne par trade) :
 
 | timestamp (ISO 8601 UTC) | asset | side | entry_price | exit_price | volume |
 |---|---|---|---|---|---|
-| 2026-11-08T14:05:22.104Z | NQ | BUY | 19850.25 | 19854.75 | 2 |
 | 2026-11-08T14:07:05.441Z | BTC | SELL | 76420.50 | 76395.00 | 1.5 |
 
 Règles importantes :
@@ -53,8 +52,8 @@ du modèle, c'est l'arithmétique. Options réalistes :
 1. **Frais réduits** : Binance Futures (0,02-0,05 %) ou statut VIP ;
 2. **Ordres maker** (limit) au lieu de taker : on gagne le spread au lieu de le payer ;
 3. **Horizon plus long** : viser des mouvements ≥ 10× les frais aller-retour ;
-4. **Futures CME (NQ/ES)** : commission fixe ~2,50 $/contrat, indépendante du prix —
-   l'arithmétique y est bien plus favorable au scalping.
+4. **Frais négociés** : viser des frais réduits (statut VIP, paiement en BNB)
+   pour abaisser le seuil de viabilité.
 
 Le pipeline est conçu pour répondre honnêtement à cette question par actif :
 c'est exactement ce que font `run_validation.py` (walk-forward + bootstrap)

@@ -126,8 +126,10 @@ class LivePaperTradingLoop:
         self.tick_count = 0
         self.drift_monitor = drift_monitor
 
+        if asset != "BTC":
+            raise ValueError("Seul le BTC est supporte par cette strategie.")
         self.money_manager = money_manager_for_asset(asset, risk_per_trade=0.005)
-        self.costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
+        self.costs = ASSET_COST_MODELS["BTC"]
         self.raw_history = deque(maxlen=max(sequence_length * 4, 200))
         self.position = None
         self.trades = []

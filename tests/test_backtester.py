@@ -121,10 +121,14 @@ class TestBacktester(unittest.TestCase):
 
 
 class TestMoneyManager(unittest.TestCase):
-    def test_valeur_du_point_nq(self):
-        mm = money_manager_for_asset("NQ", risk_per_trade=0.005, min_qty=0.0)
-        qty = mm.calculate_position_size(10000.0, atr=2.0, atr_multiplier=1.5)
-        self.assertAlmostEqual(qty, 10000 * 0.005 / (3.0 * 20.0))
+    def test_actif_non_btc_rejete(self):
+        with self.assertRaises(ValueError):
+            money_manager_for_asset("NQ")
+
+    def test_plafond_de_notionnel_btc(self):
+        mm = money_manager_for_asset("BTC", risk_per_trade=0.005, min_qty=0.0)
+        qty = mm.calculate_position_size(10000.0, atr=0.01, atr_multiplier=1.5, price=98000.0)
+        self.assertAlmostEqual(qty, 10000.0 / 98000.0, places=6)
 
     def test_plafond_max_qty(self):
         mm = ScalpingMoneyManager(risk_per_trade=0.5, point_value=1.0, max_qty=2.0, min_qty=0.0)

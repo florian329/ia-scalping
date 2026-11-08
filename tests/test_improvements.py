@@ -36,20 +36,23 @@ def make_df(prices, seed=0):
 
 
 class TestAssetFilters(unittest.TestCase):
-    def test_seuil_obi_es(self):
-        f = filters_for_asset("ES")
-        self.assertEqual(f.obi_threshold, 0.85)
-        self.assertFalse(f.obi_allowed(0.5, side=1)[0] if isinstance(f.obi_allowed(0.5, 1), tuple) else f.obi_allowed(0.5, 1))
+    def test_actif_non_btc_rejete(self):
+        with self.assertRaises(ValueError):
+            filters_for_asset("ES")
+
+    def test_seuil_obi_optionnel_btc(self):
+        f = filters_for_asset("BTC", obi_threshold=0.85)
+        self.assertFalse(f.obi_allowed(0.5, 1))
         self.assertTrue(f.obi_allowed(0.9, 1))
         self.assertFalse(f.obi_allowed(0.9, -1))
         self.assertTrue(f.obi_allowed(-0.9, -1))
 
-    def test_blackout_xau(self):
+    def test_blackout_news_btc(self):
         from datetime import datetime, timedelta, timezone
 
         start = datetime(2026, 1, 5, 14, 25, tzinfo=timezone.utc)
         end = start + timedelta(minutes=30)
-        f = filters_for_asset("XAU", news_blackouts=[(start, end)])
+        f = filters_for_asset("BTC", news_blackouts=[(start, end)])
         inside = start + timedelta(minutes=5)
         outside = end + timedelta(minutes=5)
         self.assertFalse(f.trade_allowed(1, 0.0, inside)[0])
@@ -60,7 +63,7 @@ class TestAssetFilters(unittest.TestCase):
         self.assertEqual(f.effective_depth(20), 10)
         self.assertEqual(f.effective_depth(5), 5)
 
-    def test_backtester_respecte_le_filtre_es(self):
+    def test_backtester_respecte_le_seuil_obi(self):
         import torch
 
         class AlwaysLong:
@@ -75,8 +78,10 @@ class TestAssetFilters(unittest.TestCase):
         prices = 98000.0 + np.arange(300) * 2.0
         df = make_df(prices)
         df["OBI"] = 0.5
-        report_no_filter = run_backtest(AlwaysLong(), df, asset="ES")
-        report_filtered = run_backtest(AlwaysLong(), df, asset="ES", filters=filters_for_asset("ES"))
+        report_no_filter = run_backtest(AlwaysLong(), df, asset="BTC")
+        report_filtered = run_backtest(
+            AlwaysLong(), df, asset="BTC", filters=filters_for_asset("BTC", obi_threshold=0.99)
+        )
         self.assertGreater(report_no_filter["n_trades"], 0)
         self.assertEqual(report_filtered["n_trades"], 0)
 

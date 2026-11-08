@@ -23,9 +23,6 @@ FLAT, LONG, SHORT = 0, 1, -1
 
 ASSET_COST_MODELS = {
     "BTC": {"spread": 0.01, "commission_per_qty": 0.0, "commission_rate": 0.001, "slippage": 0.01},
-    "NQ": {"spread": 0.25, "commission_per_qty": 2.5, "commission_rate": 0.0, "slippage": 0.25},
-    "ES": {"spread": 0.25, "commission_per_qty": 2.5, "commission_rate": 0.0, "slippage": 0.25},
-    "XAU": {"spread": 0.30, "commission_per_qty": 0.50, "commission_rate": 0.0, "slippage": 0.15},
 }
 
 
@@ -84,11 +81,10 @@ def run_backtest(
     """
     seq_features = seq_features or SEQ_FEATURES
     costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
+    if asset != "BTC":
+        raise ValueError("Seul le BTC est supporte par cette strategie.")
     if money_manager is None:
-        money_manager = ScalpingMoneyManager(
-            risk_per_trade=0.005,
-            point_value={"BTC": 1.0, "NQ": 20.0, "ES": 50.0, "XAU": 100.0}.get(asset, 1.0),
-        )
+        money_manager = ScalpingMoneyManager(risk_per_trade=0.005, point_value=1.0)
 
     book = df[BOOK_FEATURES].to_numpy(dtype=np.float32)
     if norm_stats is not None:

@@ -28,7 +28,7 @@ from validation import (
 def main():
     parser = argparse.ArgumentParser(description="Validation statistique de la strategie")
     parser.add_argument("--csv", default="market_data_sample.csv")
-    parser.add_argument("--asset", default="BTC")
+    parser.add_argument("--asset", default="BTC", choices=["BTC"])
     parser.add_argument("--model", default="best_scalping_model.pth")
     parser.add_argument("--n-folds", type=int, default=5)
     parser.add_argument("--n-bootstrap", type=int, default=2000)

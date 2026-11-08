@@ -20,10 +20,10 @@ OPTIONAL_COLUMNS = ["volume"]
 EXAMPLE_ROWS = [
     {
         "timestamp": "2026-11-08T14:05:22.104Z",
-        "asset": "NQ",
+        "asset": "BTC",
         "side": "BUY",
-        "entry_price": 19850.25,
-        "exit_price": 19854.75,
+        "entry_price": 76420.50,
+        "exit_price": 76455.00,
         "volume": 2,
     },
     {

@@ -1,18 +1,15 @@
 """Dimensionnement de position base sur le risque, avec valeur du point.
 
 Corrections vs version initiale :
-- Prise en compte de la valeur du point (multiplicateur de contrat) par actif :
-  NQ = 20 $/point, ES = 50 $/point, BTC = 1 $/$, XAU = 100 $/lot (100 oz).
-- Plafond de taille et stop minimum pour eviter les quantites absurdes.
+- Strategie 100 % BTC : point value 1 $/$.
+- Plafond de notionnel (capital x max_leverage / prix) et stop minimum
+  pour eviter les quantites absurdes.
 """
 
 import numpy as np
 
 POINT_VALUES = {
     "BTC": 1.0,
-    "NQ": 20.0,
-    "ES": 50.0,
-    "XAU": 100.0,
 }
 
 
@@ -57,5 +54,7 @@ class ScalpingMoneyManager:
         return max(float(atr) * atr_multiplier, self.min_stop_distance)
 
 
-def money_manager_for_asset(asset, **kwargs):
-    return ScalpingMoneyManager(point_value=POINT_VALUES.get(asset, 1.0), **kwargs)
+def money_manager_for_asset(asset="BTC", **kwargs):
+    if asset not in POINT_VALUES:
+        raise ValueError(f"Actif non supporte : {asset}. Seul le BTC est supporte.")
+    return ScalpingMoneyManager(point_value=POINT_VALUES[asset], **kwargs)

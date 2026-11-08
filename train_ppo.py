@@ -23,7 +23,7 @@ from rl_environment import ScalpingEnv
 def main():
     parser = argparse.ArgumentParser(description="Entrainement PPO pour le scalping IA")
     parser.add_argument("--csv", default="market_data_sample.csv")
-    parser.add_argument("--asset", default="BTC")
+    parser.add_argument("--asset", default="BTC", choices=["BTC"])
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--steps-per-rollout", type=int, default=512)
     parser.add_argument("--hidden-dim", type=int, default=64)

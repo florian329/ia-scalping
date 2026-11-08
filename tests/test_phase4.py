@@ -15,6 +15,7 @@ from labeling import label_ticks
 from money_management import ScalpingMoneyManager
 from pipeline_data import build_features
 from rl_environment import MultiSegmentEnv, ScalpingEnv
+from dataset import ORDER_BOOK_DIM
 from validation import (
     bootstrap_metrics,
     classify_regimes,
@@ -164,7 +165,7 @@ class TestMultiSegmentEnv(unittest.TestCase):
         obs = multi.reset()
         self.assertEqual(multi.current, 1)
         obs2, reward, done, info = multi.step(0)
-        self.assertEqual(obs2["book"].shape, (4,))
+        self.assertEqual(obs2["book"].shape, (ORDER_BOOK_DIM,))
         obs = multi.reset()
         self.assertEqual(multi.current, 0)
 

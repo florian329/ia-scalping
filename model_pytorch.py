@@ -10,7 +10,7 @@ import torch.nn as nn
 
 
 class ScalpingMultimodalNet(nn.Module):
-    def __init__(self, order_book_dim=4, sequence_dim=4, hidden_dim=64):
+    def __init__(self, order_book_dim=7, sequence_dim=5, hidden_dim=64):
         super().__init__()
         self.order_book_branch = nn.Sequential(
             nn.Linear(order_book_dim, hidden_dim),
@@ -43,13 +43,17 @@ class ScalpingMultimodalNet(nn.Module):
         return self.fusion_layer(combined)
 
 
-def predict_action(model, book_t, seq_window, device="cpu"):
-    """Inférence single-tick : retourne l'action (0/1/2) et ses probabilites."""
+def predict_action(model, book_t, seq_window, device="cpu", temperature=1.0):
+    """Inférence single-tick : retourne l'action (0/1/2) et ses probabilites.
+
+    temperature : facteur de calibration (voir calibration.fit_temperature).
+    T > 1 rend les probabilites moins confiantes, T < 1 plus confiantes.
+    """
     model.eval()
     with torch.no_grad():
         book = torch.tensor(book_t, dtype=torch.float32).unsqueeze(0).to(device)
         seq = torch.tensor(seq_window, dtype=torch.float32).unsqueeze(0).to(device)
         logits = model(book, seq)
-        probs = torch.softmax(logits, dim=1)
+        probs = torch.softmax(logits / max(temperature, 1e-6), dim=1)
         action = int(torch.argmax(probs, dim=1).item())
     return action, probs.squeeze(0).cpu().numpy()

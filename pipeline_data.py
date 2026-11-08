@@ -84,6 +84,42 @@ def compute_tick_atr(prices, window=60):
     return atr
 
 
+def compute_ofi(obi):
+    """Order Flow Imbalance dynamique : variation de l'OBI entre t et t-1.
+    L'OBI statique decrit un etat ; l'OFI capture l'acceleration du desequilibre,
+    plus predictif du mouvement imminent."""
+    obi = np.asarray(obi, dtype=np.float64)
+    ofi = np.diff(obi, prepend=obi[0] if len(obi) else 0.0)
+    return ofi
+
+
+def compute_time_of_day(df):
+    """Encodage cyclique de l'heure de session (sin/cos).
+    Le comportement du marche a 14h30 n'a rien a voir avec 3h du matin ;
+    l'encodage cyclique evite la discontinuite 23h59 -> 00h00."""
+    n = len(df)
+    if "timestamp" not in df.columns:
+        return np.zeros(n), np.zeros(n)
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    hour_fraction = ts.dt.hour + ts.dt.minute / 60.0 + ts.dt.second / 3600.0
+    angle = 2 * np.pi * hour_fraction / 24.0
+    return np.sin(angle).to_numpy(), np.cos(angle).to_numpy()
+
+
+def compute_vpin_rolling(prices, volumes, window=100):
+    """VPIN simplifie (fenetre glissante) : fraction du volume agresseur vendeur.
+    Proche de 1 = pression vendeuse extreme (flux toxique), proche de 0 =
+    pression acheteuse. Detecte l'agressivite unidirectionnelle avant les
+    grands mouvements."""
+    prices = np.asarray(prices, dtype=np.float64)
+    volumes = np.asarray(volumes, dtype=np.float64)
+    price_diff = np.diff(prices, prepend=prices[0])
+    sell_volume = volumes * (price_diff < 0)
+    roll_sell = pd.Series(sell_volume).rolling(window=window, min_periods=1).sum()
+    roll_total = pd.Series(volumes).rolling(window=window, min_periods=1).sum()
+    return (roll_sell / (roll_total + 1e-10)).to_numpy()
+
+
 def build_features(df, depth_levels=5, momentum_windows=(10, 30, 60)):
     """Assemble toutes les features dans un DataFrame copie de l'entree."""
     out = df.copy().reset_index(drop=True)
@@ -99,4 +135,7 @@ def build_features(df, depth_levels=5, momentum_windows=(10, 30, 60)):
     )
     out["VWAP_Dev"] = compute_vwap_deviation(df["last_price"], df["last_volume"])
     out["ATR_Tick"] = compute_tick_atr(df["last_price"], window=60)
+    out["OFI"] = compute_ofi(out["OBI"])
+    out["Hour_Sin"], out["Hour_Cos"] = compute_time_of_day(df)
+    out["VPIN_Rolling"] = compute_vpin_rolling(df["last_price"], df["last_volume"], window=100)
     return out

@@ -16,6 +16,7 @@ import pandas as pd
 from asset_filters import filters_for_asset
 from pipeline_data import build_features
 from ppo_agent import ActorCritic, PPOAgent
+from dataset import ORDER_BOOK_DIM, SEQUENCE_DIM
 from rl_environment import ScalpingEnv
 
 
@@ -64,7 +65,7 @@ def main():
     if os.path.exists(args.imitation_weights):
         ckpt = torch.load(args.imitation_weights, map_location="cpu")
         base_model = ScalpingMultimodalNet(
-            order_book_dim=4, sequence_dim=4, hidden_dim=args.hidden_dim
+            order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=args.hidden_dim
         )
         base_model.load_state_dict(ckpt["model_state_dict"])
         print(f"Politique initialisee depuis {args.imitation_weights} (epoque {ckpt.get('epoch', '?')})")
@@ -74,7 +75,7 @@ def main():
     agent = PPOAgent(env, hidden_dim=args.hidden_dim, device="cpu")
     if base_model is not None:
         agent.policy = ActorCritic(
-            4, 4, hidden_dim=args.hidden_dim, base_model=base_model
+            ORDER_BOOK_DIM, SEQUENCE_DIM, hidden_dim=args.hidden_dim, base_model=base_model
         ).to(agent.device)
         agent.optimizer = torch.optim.Adam(agent.policy.parameters(), lr=3e-4)
 

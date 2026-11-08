@@ -60,6 +60,16 @@ money management basé risque, boucle live paper trading.
 - **Labels pondérés par PnL** (`labeling.label_ticks(pnl_weights=True)`) : un trade annoté à +3 ticks pèse plus qu'un trade à +0,5 ; support des poids par échantillon dans `dataset` et `training_engine`.
 - `MultiSegmentEnv` (`rl_environment.py`) : le PPO tourne sur plusieurs segments du train en rotation — pas de surapprentissage d'un seul scénario.
 
+## Modules (phase 5 — performance, drift, données, calibration, tuning)
+
+- **Backtest vectorisé** (`backtester.py`, `vectorized=True` par défaut) : l'inférence se fait en paquets au lieu d'un appel par tick — **gain mesuré ×41** (10,5 s → 0,26 s sur 20 000 ticks), résultat identique au mode séquentiel.
+- **Détection de dérive** (`drift_monitor.py`) : `WinRateDriftMonitor` (win rate glissant vs référence backtest, gel automatique dans la boucle live) et `FeatureDriftMonitor` (test de Kolmogorov-Smirnov par feature — détecte le changement de régime avant les pertes).
+- **Validation d'annotations** (`prepare_annotations.py`) : template CSV, contrôle des timestamps/côtés/prix/doublons, couverture temporelle contre les données de marché. `python3 prepare_annotations.py --ann mes_trades.csv --market-csv ticks.csv`.
+- **Nouvelles features** (`pipeline_data.py`) : **OFI** (variation dynamique de l'OBI), **time-of-day** (encodage cyclique sin/cos), **VPIN roulant** (fraction du volume agresseur — toxicité du flux). Le modèle passe à 7 features carnet + 5 séquentielles.
+- **Calibration** (`calibration.py`) : temperature scaling appris sur la validation — les seuils de confiance deviennent interprétables ; ECE pour mesurer la calibration.
+- **Tuning** (`tune_hyperparameters.py`) : recherche d'hyperparamètres d'exécution (SL/TP ATR, timeout, seuil, fenêtre) avec Optuna si disponible, sinon recherche aléatoire — objectif = **expectancy out-of-sample**, pas la loss.
+- **CI** (`.github/workflows/tests.yml`) : les 57 tests tournent à chaque push/PR ; `requirements.txt` verrouille les dépendances.
+
 ## Tests
 
 ```bash
@@ -67,8 +77,9 @@ python3 tests/test_backtester.py    # 9 tests : backtester + money management
 python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
 python3 tests/test_phase3.py       # 5 tests : CME CSV, OANDA, boucle live de bout en bout
 python3 tests/test_phase4.py       # 14 tests : walk-forward, bootstrap, protections, labels pondérés, multi-segments
+python3 tests/test_phase5.py       # 16 tests : vectorisation, drift, annotations, calibration, tuning, nouvelles features
 ```
-41 tests au total, tous verts.
+57 tests au total, tous verts.
 
 ## Usage
 

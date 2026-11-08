@@ -98,6 +98,7 @@ class LivePaperTradingLoop:
         max_trades=None,
         max_consecutive_losses=3,
         cooldown_ticks=50,
+        drift_monitor=None,
     ):
         self.model = model
         self.asset = asset
@@ -123,6 +124,7 @@ class LivePaperTradingLoop:
         self.consecutive_losses = 0
         self.cooldown_until = -1
         self.tick_count = 0
+        self.drift_monitor = drift_monitor
 
         self.money_manager = money_manager_for_asset(asset, risk_per_trade=0.005)
         self.costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
@@ -184,6 +186,12 @@ class LivePaperTradingLoop:
             print(
                 f"[protection] {self.max_consecutive_losses} pertes consecutives : "
                 f"gel des trades jusqu'au tick {self.cooldown_until}"
+            )
+        if self.drift_monitor is not None and self.drift_monitor.record(net):
+            self.cooldown_until = self.tick_count + self.cooldown_ticks
+            print(
+                f"[drift] win rate devie de la reference : "
+                f"{self.drift_monitor.status()} — gel des trades"
             )
         if self.journal:
             self.journal.log(pos, self.capital, timestamp=self._last_timestamp())

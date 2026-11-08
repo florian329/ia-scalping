@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from asset_filters import filters_for_asset
 from data_feed import CMECSVFeed, ListFeed, OandaXAUFeed
 from live_paper_trading import LivePaperTradingLoop
+from dataset import ORDER_BOOK_DIM, SEQUENCE_DIM
 from model_pytorch import ScalpingMultimodalNet
 from pipeline_data import build_features
 
@@ -73,7 +74,7 @@ class TestOandaXAUFeed(unittest.TestCase):
 class TestLiveLoopEndToEnd(unittest.TestCase):
     def test_boucle_complete_avec_journal(self):
         torch.manual_seed(7)
-        model = ScalpingMultimodalNet(order_book_dim=4, sequence_dim=4, hidden_dim=32)
+        model = ScalpingMultimodalNet(order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=32)
         model.eval()
         ticks = make_ticks(600)
         journal_path = os.path.join(tempfile.gettempdir(), "live_journal_test.csv")
@@ -107,7 +108,7 @@ class TestLiveLoopEndToEnd(unittest.TestCase):
 
     def test_filtre_es_bloque_les_trades_en_live(self):
         torch.manual_seed(7)
-        model = ScalpingMultimodalNet(order_book_dim=4, sequence_dim=4, hidden_dim=32)
+        model = ScalpingMultimodalNet(order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=32)
         model.eval()
         ticks = make_ticks(400)
         for tick in ticks:

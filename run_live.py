@@ -27,7 +27,7 @@ from pipeline_data import build_features
 def load_model(path, hidden_dim=64, device="cpu"):
     ckpt = torch.load(path, map_location=device)
     state = ckpt.get("model_state_dict", ckpt.get("policy_state_dict"))
-    model = ScalpingMultimodalNet(order_book_dim=4, sequence_dim=4, hidden_dim=hidden_dim)
+    model = ScalpingMultimodalNet(order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=hidden_dim)
     backbone = state
     prefix = "backbone."
     if any(k.startswith(prefix) for k in state):
@@ -53,7 +53,7 @@ def load_norm_stats(df_path):
     df = pd.read_csv(df_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     feats = build_features(df)
-    from dataset import BOOK_FEATURES
+    from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM
 
     book = feats[BOOK_FEATURES].to_numpy(dtype=np.float32)
     return book.mean(axis=0), book.std(axis=0)

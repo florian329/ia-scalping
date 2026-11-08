@@ -8,9 +8,11 @@ import numpy as np
 import torch
 from torch.utils.data import TensorDataset
 
-BOOK_FEATURES = ["OBI", "Spread_BPS", "VWAP_Dev", "ATR_Tick"]
+BOOK_FEATURES = ["OBI", "Spread_BPS", "VWAP_Dev", "ATR_Tick", "OFI", "Hour_Sin", "Hour_Cos"]
 SEQ_FEATURES_SHORT = ["Log_Return_10", "VW_Momentum"]
-SEQ_FEATURES = ["Log_Return_10", "Log_Return_30", "Log_Return_60", "VW_Momentum"]
+SEQ_FEATURES = ["Log_Return_10", "Log_Return_30", "Log_Return_60", "VW_Momentum", "VPIN_Rolling"]
+ORDER_BOOK_DIM = len(BOOK_FEATURES)
+SEQUENCE_DIM = len(SEQ_FEATURES)
 
 
 def build_window_dataset(df, sequence_length=20, seq_features=None, with_weights=False):

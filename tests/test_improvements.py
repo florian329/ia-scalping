@@ -15,6 +15,7 @@ from backtester import run_backtest
 from data_feed import CSVReplayFeed, ListFeed, ReconnectingFeed
 from live_paper_trading import LatencyMonitor, TradeJournal
 from pipeline_data import build_features
+from dataset import ORDER_BOOK_DIM, SEQUENCE_DIM
 from rl_environment import ScalpingEnv
 
 
@@ -85,8 +86,8 @@ class TestScalpingEnv(unittest.TestCase):
         df = make_df(98000.0 + np.cumsum(np.random.default_rng(0).normal(0, 3, 400)))
         env = ScalpingEnv(df, sequence_length=20)
         obs = env.reset()
-        self.assertEqual(obs["book"].shape, (4,))
-        self.assertEqual(obs["seq"].shape, (20, 4))
+        self.assertEqual(obs["book"].shape, (ORDER_BOOK_DIM,))
+        self.assertEqual(obs["seq"].shape, (20, SEQUENCE_DIM))
         self.assertEqual(env.action_space, (3,))
 
     def test_reward_sur_tendance_haussiere(self):

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pth
+*.png
+*.csv
+.pytest_cache/

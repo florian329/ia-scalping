@@ -48,7 +48,7 @@ def make_feed(args):
 
 def load_norm_stats(df_path):
     df = pd.read_csv(df_path)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     feats = build_features(df)
     book = feats[BOOK_FEATURES].to_numpy(dtype=np.float32)
     return book.mean(axis=0), book.std(axis=0)

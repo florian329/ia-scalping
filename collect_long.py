@@ -116,7 +116,7 @@ def concatenate(directory: Path, symbol: str, out_path: Path) -> pd.DataFrame:
         raise SystemExit("Aucun segment collecte.")
     dfs = [pd.read_csv(f) for f in files]
     df = pd.concat(dfs, ignore_index=True)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     avant = len(df)
     df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     doublons = avant - len(df)

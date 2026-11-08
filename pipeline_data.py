@@ -100,7 +100,7 @@ def compute_time_of_day(df):
     n = len(df)
     if "timestamp" not in df.columns:
         return np.zeros(n), np.zeros(n)
-    ts = pd.to_datetime(df["timestamp"], utc=True)
+    ts = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     hour_fraction = ts.dt.hour + ts.dt.minute / 60.0 + ts.dt.second / 3600.0
     angle = 2 * np.pi * hour_fraction / 24.0
     return np.sin(angle).to_numpy(), np.cos(angle).to_numpy()

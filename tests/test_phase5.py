@@ -531,6 +531,32 @@ class TestCollectLong(unittest.TestCase):
         trous = verifier_continuite(df, gap_max_s=600)
         self.assertEqual(len(trous), 1)
 
+    def test_timestamps_formats_mixtes(self):
+        from collect_long import concatenate, segments_dir
+
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp())
+        out = tmp / "mixte.csv"
+        directory = segments_dir(out)
+        directory.mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "timestamp": [
+                    "2026-11-08 19:16:55.104000+00:00",
+                    "2026-11-08 19:16:56+00:00",
+                ],
+                "last_price": [76000.0, 76001.0],
+                "last_volume": [1.0, 1.0],
+            }
+        ).to_csv(directory / "seg_BTCUSDT_0001.csv", index=False)
+        df = concatenate(directory, "BTCUSDT", out)
+        self.assertEqual(len(df), 2)
+        self.assertTrue(df["timestamp"].notna().all())
+        shutil.rmtree(tmp)
+
     def test_dedoublonnage_a_la_concatenation(self):
         from collect_long import concatenate
 

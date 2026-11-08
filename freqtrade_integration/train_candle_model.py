@@ -26,7 +26,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from freqtrade_integration.IaScalpingStrategy import BOOK_FEATURES, SEQ_FEATURES
+from candle_features import BOOK_FEATURES, SEQ_FEATURES, build_features as _bf
 from model_pytorch import ScalpingMultimodalNet
 from training_engine import train_model
 
@@ -55,33 +55,6 @@ def load_candles(path: str) -> pd.DataFrame:
     return df
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    close = df["close"].astype(float)
-    volume = df["volume"].astype(float)
-    out = pd.DataFrame(index=df.index)
-    out["date"] = pd.to_datetime(df["date"], utc=True)
-    out["ret_1"] = np.log(close / close.shift(1))
-    for w in (10, 30, 60):
-        out[f"log_ret_{w}"] = np.log(close / close.shift(w))
-    typical = (df["high"] + df["low"] + df["close"]) / 3.0
-    vwap = (typical * volume).cumsum() / (volume.cumsum() + 1e-12)
-    out["vwap_dev"] = (close - vwap) / (vwap + 1e-12)
-    tr = np.maximum(
-        df["high"] - df["low"],
-        np.maximum(abs(df["high"] - close.shift(1)), abs(df["low"] - close.shift(1))),
-    )
-    out["atr_norm"] = tr.rolling(14).mean() / (close + 1e-12)
-    out["vol_z"] = (volume - volume.rolling(60).mean()) / (volume.rolling(60).std() + 1e-12)
-    out["vol_change"] = volume.pct_change()
-    out["vol_mom"] = (volume * np.sign(out["ret_1"].fillna(0))).rolling(10).sum()
-    out["range_ratio"] = (close - df["low"]) / (df["high"] - df["low"] + 1e-12)
-    hour = out["date"].dt.hour + out["date"].dt.minute / 60.0
-    angle = 2 * np.pi * hour / 24.0
-    out["hour_sin"] = np.sin(angle)
-    out["hour_cos"] = np.cos(angle)
-    return out
-
-
 def build_labels(df: pd.DataFrame, horizon: int, fee_rate: float) -> np.ndarray:
     close = df["close"].astype(float).to_numpy()
     future = close[horizon:] / close[:-horizon] - 1.0
@@ -103,7 +76,7 @@ def main():
     args = parser.parse_args()
 
     df = load_candles(args.data)
-    feats = build_features(df)
+    feats = _bf(df)
     labels = build_labels(df, args.horizon, FEE_RATE)
     feats = feats.iloc[60:].reset_index(drop=True)
     labels = labels[60:]

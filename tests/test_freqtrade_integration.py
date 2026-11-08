@@ -17,7 +17,8 @@ try:
 except ImportError:
     FREQTRADE_AVAILABLE = False
 
-from freqtrade_integration.train_candle_model import build_features, build_labels
+from candle_features import BOOK_FEATURES, SEQ_FEATURES, build_features
+from freqtrade_integration.train_candle_model import build_labels
 
 
 def make_candles(n=400, seed=0):
@@ -39,7 +40,6 @@ def make_candles(n=400, seed=0):
 class TestCandleFeatures(unittest.TestCase):
     def test_features_generees_sans_nan_apres_chauffe(self):
         feats = build_features(make_candles())
-        from freqtrade_integration.IaScalpingStrategy import BOOK_FEATURES, SEQ_FEATURES
 
         hot = feats.iloc[60:]
         self.assertFalse(hot[BOOK_FEATURES + SEQ_FEATURES].isna().any().any())
@@ -54,7 +54,7 @@ class TestCandleFeatures(unittest.TestCase):
         self.assertGreater((labels_haussier == 1).sum(), (labels_haussier == 2).sum())
 
     def test_fenetres_seq_taille_fixe(self):
-        from freqtrade_integration.IaScalpingStrategy import _build_seq_windows
+        from candle_features import _build_seq_windows
 
         seq = np.random.default_rng(0).normal(size=(50, 5)).astype(np.float32)
         windows = _build_seq_windows(seq)

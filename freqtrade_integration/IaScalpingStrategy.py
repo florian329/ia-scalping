@@ -29,6 +29,7 @@ import numpy as np
 import torch
 from pandas import DataFrame
 
+from candle_features import BOOK_FEATURES, SEQ_FEATURES, _build_seq_windows
 from freqtrade.strategy import IStrategy
 
 logger = logging.getLogger(__name__)
@@ -41,16 +42,7 @@ MODEL_DIR = Path(__file__).parent / "model"
 MODEL_PATH = MODEL_DIR / "candle_model.pth"
 NORM_STATS_PATH = MODEL_DIR / "norm_stats.json"
 
-def _build_seq_windows(seq: np.ndarray, window: int = 20) -> np.ndarray:
-    n = len(seq)
-    if n == 0:
-        return np.zeros((0, window, seq.shape[1]), dtype=np.float32)
-    padded = np.concatenate([np.repeat(seq[:1], window - 1, axis=0), seq], axis=0)
-    return np.stack([padded[i : i + window] for i in range(n)]).astype(np.float32)
 
-
-BOOK_FEATURES = ["vol_z", "vwap_dev", "atr_norm", "hour_sin", "hour_cos", "vol_change", "range_ratio"]
-SEQ_FEATURES = ["log_ret_10", "log_ret_30", "log_ret_60", "vol_mom", "ret_1"]
 
 
 class IaScalpingStrategy(IStrategy):

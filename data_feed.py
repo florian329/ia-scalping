@@ -154,3 +154,184 @@ class TardisCSVFeed:
                 if i == 1:
                     tick["best_ask"] = float(row["price"])
             yield tick
+
+
+CME_TICK_SIZES = {"NQ": 0.25, "ES": 0.25}
+
+
+class CMECSVFeed:
+    """Ticks CME (NQ/ES) au format CSV FirstRateData : DateTime,Price,Volume.
+
+    FirstRateData fournit les trades centralises mais pas la profondeur L2.
+    Les niveaux de carnet sont donc synthetises : best bid/ask autour du prix
+    de trade (taille du tick du contrat) et tailles decroissantes ponderees par
+    le volume du trade. Approximation documentee : pour de l'order flow reel
+    en profondeur sur CME, utiliser IBKRFeed ou un flux CME MDP3.
+    """
+
+    def __init__(self, path, contract="NQ", depth=5, level_decay=0.7):
+        self.path = path
+        self.contract = contract
+        self.depth = depth
+        self.level_decay = level_decay
+
+    def __iter__(self):
+        df = pd.read_csv(self.path)
+        cols = {c.lower().strip(): c for c in df.columns}
+        dt_col = next((cols[c] for c in ("datetime", "date", "timestamp") if c in cols), None)
+        px_col = next((cols[c] for c in ("price", "last", "close") if c in cols), None)
+        vol_col = next((cols[c] for c in ("volume", "vol") if c in cols), None)
+        if dt_col is None or px_col is None:
+            raise ValueError(
+                f"Colonnes attendues DateTime,Price[,Volume] — trouve : {list(df.columns)}"
+            )
+        tick_size = CME_TICK_SIZES.get(self.contract, 0.25)
+        for _, row in df.iterrows():
+            price = float(row[px_col])
+            volume = float(row[vol_col]) if vol_col is not None else 1.0
+            tick = {
+                "timestamp": pd.to_datetime(row[dt_col], utc=True),
+                "last_price": price,
+                "last_volume": volume,
+                "best_bid": price - tick_size,
+                "best_ask": price + tick_size,
+            }
+            for i in range(1, self.depth + 1):
+                size = max(1.0, volume * (self.level_decay ** (i - 1)))
+                tick[f"bid_size_{i}"] = size
+                tick[f"ask_size_{i}"] = size
+            yield tick
+
+
+class IBKRFeed:
+    """Flux CME via Interactive Brokers (TWS / IB Gateway).
+
+    Necessite `pip install ib_insync` et une connexion TWS/Gateway active
+    avec l'API active (File > Global Configuration > API > Settings).
+    Le module est importe paresseusement : le reste du pipeline fonctionne
+    sans cette dependance.
+    """
+
+    def __init__(
+        self,
+        symbol="NQ",
+        exchange="CME",
+        currency="USD",
+        host="127.0.0.1",
+        port=7497,
+        client_id=17,
+        poll_interval=0.2,
+        depth=5,
+    ):
+        self.symbol = symbol
+        self.exchange = exchange
+        self.currency = currency
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+        self.poll_interval = poll_interval
+        self.depth = depth
+
+    def _connect(self):
+        try:
+            from ib_insync import IB, Contract, MarketDatum
+        except ImportError as exc:
+            raise ImportError(
+                "IBKRFeed necessite le package ib_insync : pip install ib_insync"
+            ) from exc
+        ib = IB()
+        ib.connect(self.host, self.port, clientId=self.client_id)
+        contract = Contract()
+        contract.symbol = self.symbol
+        contract.secType = "FUT"
+        contract.exchange = self.exchange
+        contract.currency = self.currency
+        ib.qualifyContracts(contract)
+        return ib, contract
+
+    def __iter__(self):
+        ib, contract = self._connect()
+        ticker = ib.reqMktDepth(contract, numRows=self.depth)
+        try:
+            while True:
+                ib.sleep(self.poll_interval)
+                dom = ticker.dom
+                if dom is None or (dom.bids and dom.asks):
+                    bid = dom.bids[0] if dom and dom.bids else None
+                    ask = dom.asks[0] if dom and dom.asks else None
+                    tick = {
+                        "timestamp": pd.Timestamp.now(tz="UTC"),
+                        "last_price": float(ticker.last or (bid.price + ask.price) / 2 if bid and ask else 0.0),
+                        "last_volume": float(getattr(ticker, "lastSize", 0) or 0.0),
+                        "best_bid": float(bid.price) if bid else float("nan"),
+                        "best_ask": float(ask.price) if ask else float("nan"),
+                    }
+                    for i in range(1, self.depth + 1):
+                        b = dom.bids[i - 1] if dom and len(dom.bids) >= i else None
+                        a = dom.asks[i - 1] if dom and len(dom.asks) >= i else None
+                        tick[f"bid_size_{i}"] = float(b.size) if b else 0.0
+                        tick[f"ask_size_{i}"] = float(a.size) if a else 0.0
+                    yield tick
+        finally:
+            ib.disconnect()
+
+
+class OandaXAUFeed:
+    """Flux XAU/USD spot interbancaire via l'API REST OANDA (v20).
+
+    Sans dependance externe (urllib). Necessite la variable d'environnement
+    OANDA_API_KEY ; utilise l'environnement "practice" par defaut.
+    Recupere la bougie la plus courte (S5) et la prix mid bid/ask.
+    """
+
+    def __init__(
+        self,
+        instrument="XAU_USD",
+        granularity="S5",
+        poll_interval=5.0,
+        api_key_env="OANDA_API_KEY",
+        practice=True,
+    ):
+        self.instrument = instrument
+        self.granularity = granularity
+        self.poll_interval = poll_interval
+        self.api_key_env = api_key_env
+        self.practice = practice
+
+    def _fetch(self):
+        import json
+        import os
+        import urllib.request
+
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"Variable d'environnement {self.api_key_env} manquante pour OandaXAUFeed"
+            )
+        host = "api-fxpractice.oanda.com" if self.practice else "api-fxtrade.oanda.com"
+        url = (
+            f"https://{host}/v3/instruments/{self.instrument}/candles"
+            f"?granularity={self.granularity}&count=1&price=M"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        candle = payload["candles"][0]
+        mid = candle["mid"]
+        return {
+            "timestamp": pd.to_datetime(candle["time"], utc=True),
+            "last_price": float(mid["c"]),
+            "last_volume": float(candle["volume"]),
+            "best_bid": float(mid["c"]) - 0.15,
+            "best_ask": float(mid["c"]) + 0.15,
+            "bid_size_1": 10.0,
+            "ask_size_1": 10.0,
+        }
+
+    def __iter__(self):
+        while True:
+            try:
+                yield self._fetch()
+            except Exception:
+                raise
+            time.sleep(self.poll_interval)

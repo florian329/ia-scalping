@@ -34,14 +34,13 @@ class TradeJournal:
     def __init__(self, path="trades_journal.csv", asset="BTC"):
         self.path = path
         self.asset = asset
-        self._write_header = not os.path.exists(path)
+        if not os.path.exists(path):
+            with open(path, "w", newline="") as f:
+                csv.DictWriter(f, fieldnames=self.FIELDNAMES).writeheader()
 
     def log(self, trade, capital_after, timestamp=None):
         with open(self.path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
-            if self._write_header:
-                writer.writeheader()
-                self._write_header = False
             writer.writerow({
                 "timestamp": timestamp,
                 "asset": self.asset,

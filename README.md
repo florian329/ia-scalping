@@ -45,12 +45,21 @@ money management basé risque, boucle live paper trading.
 - `live_paper_trading.py` (durci) — journalisation CSV des trades (`TradeJournal`), statistiques de latence moyenne/p95/max (`LatencyMonitor`), filtres par actif, support des feeds avec reconnexion.
 - `tests/test_improvements.py` — 13 tests supplémentaires (22 au total).
 
+## Modules (phase 3 — connecteurs et mise en production)
+
+- `CMECSVFeed` (`data_feed.py`) — ticks NQ/ES au format CSV FirstRateData (DateTime,Price,Volume) ; carnet synthétisé (le flux L2 CME réel nécessite IBKRFeed ou MDP3).
+- `IBKRFeed` (`data_feed.py`) — profondeur L2 CME via TWS/IB Gateway (`pip install ib_insync`, import paresseux).
+- `OandaXAUFeed` (`data_feed.py`) — XAU/USD spot interbancaire via l'API REST OANDA v20 (stdlib uniquement, clé via `OANDA_API_KEY`, environnement practice par défaut).
+- `run_live.py` — point d'entrée du paper trading : `python3 run_live.py --asset BTC --feed csv --csv market_data_sample.csv --model best_scalping_model.pth` ; charge le modèle (imitation ou PPO), applique les filtres, journalise, affiche la latence moyenne/p95/max.
+
 ## Tests
 
 ```bash
 python3 tests/test_backtester.py    # 9 tests : backtester + money management
 python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
+python3 tests/test_phase3.py       # 5 tests : CME CSV, OANDA, boucle live de bout en bout
 ```
+27 tests au total, tous verts.
 
 ## Usage
 
@@ -62,9 +71,9 @@ python3 run_smoke_test.py         # pipeline complet sur donnees synthetiques
 
 ## Avertissements connus
 
-- Le connecteur CME/IBKR (NQ/ES) et le flux XAU interbancaire restent à brancher
-  (interface `data_feed.py` prête ; `TardisCSVFeed` couvre déjà BTC).
-- La phase PPO est validée mécaniquement (22 tests verts, entraînement stable avec
+- `CMECSVFeed` synthétise la profondeur du carnet (FirstRateData ne fournit pas le L2) :
+  pour de l'order flow CME réel en profondeur, utiliser `IBKRFeed`.
+- La phase PPO est validée mécaniquement (27 tests verts, entraînement stable avec
   `reward_scale`) mais n'a été démontrée que sur données synthétiques.
 - Le smoke test produit un résultat négatif : c'est attendu. Les données sont un random
   walk sans signal, et ~950 $ de frais sur 212 trades illustrent pourquoi le scalping

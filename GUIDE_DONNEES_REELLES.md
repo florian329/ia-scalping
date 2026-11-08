@@ -49,8 +49,9 @@ Sur 3 minutes de BTC/Binance avec les frais spot réels (0,1 % taker) :
 alors que le mouvement moyen par tick est ~0,0001 %. Le scalping tick-à-tick
 de BTC spot aux frais standard n'est **pas viable** — ce n'est pas un défaut
 du modèle, c'est l'arithmétique. Options réalistes :
-1. **Frais réduits** : Binance Futures (0,02-0,05 %) ou statut VIP ;
-2. **Ordres maker** (limit) au lieu de taker : on gagne le spread au lieu de le payer ;
+1. **Ordres maker** (limit) au lieu de taker : implémenté (`execution="maker"`) —
+   frais ÷3 mesurés sur données réelles, adverse selection modélisée ;
+2. **Frais réduits** : Binance Futures (0,02-0,05 %) ou statut VIP ;
 3. **Horizon plus long** : viser des mouvements ≥ 10× les frais aller-retour ;
 4. **Frais négociés** : viser des frais réduits (statut VIP, paiement en BNB)
    pour abaisser le seuil de viabilité.

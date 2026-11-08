@@ -69,6 +69,26 @@ La stratégie est **exclusivement BTC** : tout autre actif est rejeté explicite
 - **Tuning** (`tune_hyperparameters.py`) : recherche d'hyperparamètres d'exécution (SL/TP ATR, timeout, seuil, fenêtre) avec Optuna si disponible, sinon recherche aléatoire — objectif = **expectancy out-of-sample**, pas la loss.
 - **CI** (`.github/workflows/tests.yml`) : les 57 tests tournent à chaque push/PR ; `requirements.txt` verrouille les dépendances.
 
+## Mode d'exécution maker (`backtester.py`, `rl_environment.py`)
+
+`run_backtest(..., execution="maker")` place des ordres limites au carnet au lieu
+d'ordres au marché :
+
+- **Entrée** : limite au best bid (long) / best ask (short) — remplie uniquement
+  si le prix traverse le niveau (adverse selection modélisée), sinon annulée
+  après `maker_timeout_ticks`. Frais maker (0,02 %, type futures) au lieu de
+  taker (0,1 %).
+- **Sortie TP** : limite à cours atteint — frais maker, pas de slippage.
+- **Sortie stop/timeout** : au marché — frais taker + slippage (réaliste : un
+  stop est toujours prémium).
+- Le rapport inclut `maker_fills` / `maker_cancels` pour mesurer le taux de
+  remplissage.
+
+Sur l'échantillon BTC réel (toujours-long naïf, 3 min) : taker = −1,88 %
+(198 $ de frais, IC 95 % entièrement négatif) vs maker = −0,58 % (68 $ de
+frais, **IC 95 % chevauchant 0**) — le maker divise les frais par 3 et rapproche
+structurellement la stratégie de la viabilité.
+
 ## Tests
 
 ```bash

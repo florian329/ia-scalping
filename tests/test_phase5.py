@@ -17,6 +17,7 @@ from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM, build_window_da
 from drift_monitor import FeatureDriftMonitor, WinRateDriftMonitor
 from model_pytorch import ScalpingMultimodalNet
 from pipeline_data import build_features
+from rl_environment import ScalpingEnv
 from prepare_annotations import generate_template, validate_annotations
 from tune_hyperparameters import evaluate_params, random_search
 
@@ -224,6 +225,53 @@ class TestNouvellesFeatures(unittest.TestCase):
         self.assertEqual(ORDER_BOOK_DIM, 7)
         self.assertEqual(SEQUENCE_DIM, 5)
 
+
+
+class TestMakerExecution(unittest.TestCase):
+    def test_remplissage_au_bid_sans_half_spread(self):
+        base = 98000.0 + 0.5 * ((-1) ** np.arange(60))
+        prices = np.concatenate([base, [97998.0], 98000.0 + np.arange(1, 200) * 5.0])
+        df = make_df(prices)
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=1000, execution="maker"
+        )
+        self.assertGreater(report["n_trades"], 0)
+        self.assertGreater(report["maker_fills"], 0)
+        for tr in report["trades"]:
+            self.assertLessEqual(tr.entry_price, 98000.0)
+
+    def test_annulation_si_le_prix_ne_traverse_jamais(self):
+        prices = 98000.0 + np.arange(300) * 5.0
+        df = make_df(prices)
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=10, execution="maker",
+            maker_timeout_ticks=5,
+        )
+        self.assertEqual(report["n_trades"], 0)
+        self.assertGreater(report["maker_cancels"], 0)
+
+    def test_frais_maker_inferieurs_au_taker(self):
+        base = 98000.0 + 0.5 * ((-1) ** np.arange(60))
+        prices = np.concatenate([base, [97998.0], 98000.0 + np.arange(1, 150) * 5.0])
+        df = make_df(prices)
+        taker = run_backtest(ConstantModel(1), df, asset="BTC", max_holding_ticks=1000, execution="taker")
+        maker = run_backtest(ConstantModel(1), df, asset="BTC", max_holding_ticks=1000, execution="maker")
+        self.assertGreater(taker["n_trades"], 0)
+        self.assertGreater(maker["n_trades"], 0)
+        fees_taker_par_trade = taker["total_fees"] / taker["n_trades"]
+        fees_maker_par_trade = maker["total_fees"] / maker["n_trades"]
+        self.assertLess(fees_maker_par_trade, fees_taker_par_trade)
+
+    def test_env_rl_maker_remplit_au_travers(self):
+        base = 98000.0 + 0.5 * ((-1) ** np.arange(60))
+        prices = np.concatenate([base, [97998.0], 98000.0 + np.arange(1, 100) * 5.0])
+        df = make_df(prices)
+        env = ScalpingEnv(df, sequence_length=20, execution="maker", time_penalty=0.0, drawdown_penalty=0.0)
+        env.reset()
+        done = False
+        while not done:
+            _, reward, done, _ = env.step(1)
+        self.assertNotEqual(env.realized_pnl, 0.0)
 
 if __name__ == "__main__":
     unittest.main()

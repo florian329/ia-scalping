@@ -17,6 +17,7 @@ import torch
 from money_management import ScalpingMoneyManager
 from model_pytorch import predict_action
 from dataset import BOOK_FEATURES, SEQ_FEATURES
+from asset_filters import AssetFilters
 
 FLAT, LONG, SHORT = 0, 1, -1
 
@@ -70,6 +71,7 @@ def run_backtest(
     norm_stats=None,
     seq_features=None,
     confidence_threshold=0.0,
+    filters=None,
 ):
     """Simule la strategie sur df (features calculees par pipeline_data.build_features).
 
@@ -90,6 +92,8 @@ def run_backtest(
     seq = df[seq_features].to_numpy(dtype=np.float32)
     prices = df["last_price"].to_numpy(dtype=np.float64)
     atr = df["ATR_Tick"].to_numpy(dtype=np.float64) if "ATR_Tick" in df else np.full(len(df), 1.0)
+    raw_obi = df["OBI"].to_numpy(dtype=np.float64) if "OBI" in df else np.zeros(len(df))
+    timestamps = df["timestamp"].to_numpy() if "timestamp" in df else [None] * len(df)
 
     capital = initial_capital
     position = None
@@ -156,7 +160,13 @@ def run_backtest(
                 model, book[t - 1], seq[t - sequence_length : t], device=device
             )
             if probs[action] >= confidence_threshold and action in (1, 2):
-                open_position(LONG if action == 1 else SHORT, t, price)
+                if filters is None:
+                    open_position(LONG if action == 1 else SHORT, t, price)
+                else:
+                    side = 1 if action == 1 else -1
+                    allowed, _ = filters.trade_allowed(side, raw_obi[t - 1], timestamps[t - 1])
+                    if allowed:
+                        open_position(LONG if action == 1 else SHORT, t, price)
 
         if position is not None:
             unrealized = (price - position.entry_price) * position.qty * position.direction

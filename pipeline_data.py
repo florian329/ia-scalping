@@ -39,7 +39,11 @@ def compute_log_returns(prices, windows=(10, 30, 60)):
     """Rendements logarithmiques sur plusieurs fenetres de ticks."""
     out = {}
     prices = np.asarray(prices, dtype=np.float64)
+    n = len(prices)
     for w in windows:
+        if w >= n:
+            out[w] = np.zeros(n)
+            continue
         shifted = np.concatenate((np.full(w, prices[0]), prices[:-w]))
         lr = np.log(prices / (shifted + 1e-10))
         lr[:w] = 0.0

@@ -21,7 +21,7 @@ money management basé risque, boucle live paper trading.
 | Live trading = stub vide | `live_paper_trading.py` : feed injectable, TP/SL, kill-switch, latence |
 | Features promises absentes (VWAP, ATR, spread, momentum 10/30/60) | Toutes implémentées dans `pipeline_data.py` |
 
-## Modules
+## Modules (phase 1 — corrections)
 
 - `pipeline_data.py` — OBI multi-profondeur, spread, log-returns 10/30/60, momentum signé, écart VWAP, ATR tick.
 - `labeling.py` — labels 0/1/2 depuis les annotations, fenêtre optionnelle, poids de classes.
@@ -34,7 +34,23 @@ money management basé risque, boucle live paper trading.
 - `live_paper_trading.py` — boucle temps réel avec feed injectable et kill-switch.
 - `data_generator.py` — données synthétiques de test (ticks + carnet 5 niveaux + annotations).
 - `run_smoke_test.py` — pipeline de bout en bout.
-- `tests/test_backtester.py` — 9 tests unitaires.
+
+## Modules (phase 2 — améliorations)
+
+- `asset_filters.py` — filtres par actif de la spec : OBI > 0.85 pour ES, blackout news pour XAU (fenêtres configurables), anti-spoofing BTC (profondeur carnet plafonnée à 10 niveaux). Intégrés au backtester et à la boucle live.
+- `rl_environment.py` — environnement RL (interface reset/step type Gym, sans dépendance) : TP/SL ATR, coûts, pénalité de temps de rétention et de drawdown conformes à la fonction de reward de la spec.
+- `ppo_agent.py` — PPO compact en PyTorch pur (clip surrogate, GAE, entropy bonus), politique initialisable depuis les poids d'imitation.
+- `train_ppo.py` — script de la phase 2 : `python3 train_ppo.py --csv market_data_sample.csv --iterations 50`.
+- `data_feed.py` — connecteurs : `CSVReplayFeed`, `ListFeed`, `ReconnectingFeed` (backoff exponentiel), `CCXTFeed` (sandbox, import paresseux), `TardisCSVFeed` (carnet L2 + trades agrégés).
+- `live_paper_trading.py` (durci) — journalisation CSV des trades (`TradeJournal`), statistiques de latence moyenne/p95/max (`LatencyMonitor`), filtres par actif, support des feeds avec reconnexion.
+- `tests/test_improvements.py` — 13 tests supplémentaires (22 au total).
+
+## Tests
+
+```bash
+python3 tests/test_backtester.py    # 9 tests : backtester + money management
+python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
+```
 
 ## Usage
 
@@ -46,9 +62,10 @@ python3 run_smoke_test.py         # pipeline complet sur donnees synthetiques
 
 ## Avertissements connus
 
-- La phase RL/PPO de la spec n'est pas implémentée (imitation seule).
-- Les seuils par actif du PDF (OBI > 0.85 pour ES, blackout news XAU, filtre spoofing BTC)
-  ne sont pas encore câblés dans la boucle live.
+- Le connecteur CME/IBKR (NQ/ES) et le flux XAU interbancaire restent à brancher
+  (interface `data_feed.py` prête ; `TardisCSVFeed` couvre déjà BTC).
+- La phase PPO est validée mécaniquement (22 tests verts, entraînement stable avec
+  `reward_scale`) mais n'a été démontrée que sur données synthétiques.
 - Le smoke test produit un résultat négatif : c'est attendu. Les données sont un random
   walk sans signal, et ~950 $ de frais sur 212 trades illustrent pourquoi le scalping
   exige un bord brut très élevé avant coûts. Ne pas extrapoler sur données réelles.

@@ -9,6 +9,8 @@ La version initiale etait un stub vide (sleep + break). Cette version :
   d'inference.
 """
 
+import csv
+import os
 import time
 from collections import deque
 
@@ -19,6 +21,60 @@ from dataset import BOOK_FEATURES, SEQ_FEATURES
 from model_pytorch import predict_action
 from money_management import money_manager_for_asset
 from pipeline_data import build_features
+
+
+class TradeJournal:
+    """Journalisation CSV de chaque trade cloture."""
+
+    FIELDNAMES = [
+        "timestamp", "asset", "side", "entry_price", "exit_price",
+        "qty", "pnl", "exit_reason", "capital_after",
+    ]
+
+    def __init__(self, path="trades_journal.csv", asset="BTC"):
+        self.path = path
+        self.asset = asset
+        self._write_header = not os.path.exists(path)
+
+    def log(self, trade, capital_after, timestamp=None):
+        with open(self.path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
+            if self._write_header:
+                writer.writeheader()
+                self._write_header = False
+            writer.writerow({
+                "timestamp": timestamp,
+                "asset": self.asset,
+                "side": "LONG" if trade.side == LONG else "SHORT",
+                "entry_price": trade.entry_price,
+                "exit_price": trade.exit_price,
+                "qty": trade.qty,
+                "pnl": trade.pnl_fill(trade.exit_price),
+                "exit_reason": trade.exit_reason,
+                "capital_after": capital_after,
+            })
+
+
+class LatencyMonitor:
+    """Statistiques de latence d'inference (moyenne / p95 / max)."""
+
+    def __init__(self):
+        self.samples = []
+
+    def record(self, milliseconds):
+        if milliseconds is not None:
+            self.samples.append(milliseconds)
+
+    def stats(self):
+        if not self.samples:
+            return {"mean_ms": None, "p95_ms": None, "max_ms": None, "n": 0}
+        arr = np.array(self.samples)
+        return {
+            "mean_ms": float(arr.mean()),
+            "p95_ms": float(np.percentile(arr, 95)),
+            "max_ms": float(arr.max()),
+            "n": len(arr),
+        }
 
 
 class LivePaperTradingLoop:
@@ -38,6 +94,8 @@ class LivePaperTradingLoop:
         norm_stats=None,
         on_trade=None,
         poll_seconds=0.2,
+        filters=None,
+        journal_path=None,
     ):
         self.model = model
         self.asset = asset
@@ -54,6 +112,9 @@ class LivePaperTradingLoop:
         self.norm_stats = norm_stats
         self.on_trade = on_trade
         self.poll_seconds = poll_seconds
+        self.filters = filters
+        self.journal = TradeJournal(journal_path, asset=asset) if journal_path else None
+        self.latency = LatencyMonitor()
 
         self.money_manager = money_manager_for_asset(asset, risk_per_trade=0.005)
         self.costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
@@ -104,9 +165,16 @@ class LivePaperTradingLoop:
         pos.exit_price = fill
         pos.exit_reason = reason
         self.trades.append(pos)
+        if self.journal:
+            self.journal.log(pos, self.capital, timestamp=self._last_timestamp())
         if self.on_trade:
             self.on_trade(pos)
         self.position = None
+
+    def _last_timestamp(self):
+        if not self.raw_history:
+            return None
+        return self.raw_history[-1].get("timestamp")
 
     def _maybe_open(self, price, t_index):
         frame = self._build_frame()
@@ -121,8 +189,15 @@ class LivePaperTradingLoop:
             self.model, book[-1], seq[-self.sequence_length :], device=self.device
         )
         self.last_inference_ms = (time.perf_counter() - start) * 1000.0
+        self.latency.record(self.last_inference_ms)
         if action not in (1, 2) or probs[action] < self.confidence_threshold:
             return
+        if self.filters is not None:
+            obi_raw = float(feats["OBI"].iloc[-1])
+            ts = self._last_timestamp()
+            allowed, refused = self.filters.trade_allowed(1 if action == 1 else -1, obi_raw, ts)
+            if not allowed:
+                return
         atr = float(feats["ATR_Tick"].iloc[-1])
         qty = self.money_manager.calculate_position_size(self.capital, atr, self.atr_multiplier_sl)
         if qty <= 0:
@@ -173,9 +248,13 @@ class LivePaperTradingLoop:
             if self.position is not None:
                 self._close(self.raw_history[-1]["last_price"], "shutdown")
             self.running = False
-        return {
+        result = {
             "capital": self.capital,
             "n_trades": len(self.trades),
             "trades": self.trades,
             "last_inference_ms": self.last_inference_ms,
+            "latency": self.latency.stats(),
         }
+        if hasattr(self.feed, "reconnect_count"):
+            result["reconnect_count"] = self.feed.reconnect_count
+        return result

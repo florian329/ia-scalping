@@ -47,7 +47,7 @@ def main():
         )
 
     df = pd.read_csv(args.csv)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     df = build_features(df)
     model = load_model(args.model, hidden_dim=args.hidden_dim)
 

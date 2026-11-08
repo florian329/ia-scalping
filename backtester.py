@@ -22,10 +22,10 @@ from asset_filters import AssetFilters
 FLAT, LONG, SHORT = 0, 1, -1
 
 ASSET_COST_MODELS = {
-    "BTC": {"spread": 1.0, "commission_per_qty": 0.0, "slippage": 0.5},
-    "NQ": {"spread": 0.25, "commission_per_qty": 2.5, "slippage": 0.25},
-    "ES": {"spread": 0.25, "commission_per_qty": 2.5, "slippage": 0.25},
-    "XAU": {"spread": 0.30, "commission_per_qty": 0.50, "slippage": 0.15},
+    "BTC": {"spread": 0.01, "commission_per_qty": 0.0, "commission_rate": 0.001, "slippage": 0.01},
+    "NQ": {"spread": 0.25, "commission_per_qty": 2.5, "commission_rate": 0.0, "slippage": 0.25},
+    "ES": {"spread": 0.25, "commission_per_qty": 2.5, "commission_rate": 0.0, "slippage": 0.25},
+    "XAU": {"spread": 0.30, "commission_per_qty": 0.50, "commission_rate": 0.0, "slippage": 0.15},
 }
 
 
@@ -115,11 +115,17 @@ def run_backtest(
             model, book, seq, sequence_length, device, inference_chunk_size
         )
 
+    def _fees_for(price, qty):
+        return (
+            costs.get("commission_per_qty", 0.0) * qty
+            + costs.get("commission_rate", 0.0) * price * qty
+        )
+
     def close_position(trade, exit_index, exit_price, reason):
         nonlocal capital, position, total_fees, consecutive_losses, cooldown_until
         slip = costs["slippage"]
         fill = exit_price - slip if trade.side == LONG else exit_price + slip
-        fees = costs["commission_per_qty"] * trade.qty
+        fees = _fees_for(fill, trade.qty)
         net = trade.pnl_fill(fill) - fees
         capital += net
         total_fees += fees + slip * trade.qty * money_manager.point_value
@@ -138,7 +144,7 @@ def run_backtest(
 
     def open_position(side, t, action_price):
         nonlocal capital, position, total_fees
-        qty = money_manager.calculate_position_size(capital, atr[t - 1])
+        qty = money_manager.calculate_position_size(capital, atr[t - 1], price=action_price)
         if qty <= 0:
             return
         half_spread = costs["spread"] / 2.0
@@ -155,7 +161,7 @@ def run_backtest(
             tp = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl) * (
                 atr_multiplier_tp / atr_multiplier_sl
             )
-        fees = costs["commission_per_qty"] * qty
+        fees = _fees_for(entry, qty)
         capital -= fees
         total_fees += fees
         position = Trade(side, t, entry, qty, stop, tp)

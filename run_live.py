@@ -18,6 +18,7 @@ import pandas as pd
 import torch
 
 from asset_filters import filters_for_asset
+from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM
 from data_feed import CMECSVFeed, CSVReplayFeed, CCXTFeed, ListFeed, OandaXAUFeed
 from live_paper_trading import LivePaperTradingLoop
 from model_pytorch import ScalpingMultimodalNet
@@ -53,8 +54,6 @@ def load_norm_stats(df_path):
     df = pd.read_csv(df_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     feats = build_features(df)
-    from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM
-
     book = feats[BOOK_FEATURES].to_numpy(dtype=np.float32)
     return book.mean(axis=0), book.std(axis=0)
 

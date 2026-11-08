@@ -26,6 +26,7 @@ class ScalpingEnv:
         atr_multiplier_tp=2.0,
         spread=1.0,
         commission_per_qty=0.0,
+        commission_rate=0.0,
         slippage=0.5,
         time_penalty=0.001,
         drawdown_penalty=0.01,
@@ -44,7 +45,9 @@ class ScalpingEnv:
         self.atr_multiplier_tp = atr_multiplier_tp
         self.spread = spread
         self.commission_per_qty = commission_per_qty
+        self.commission_rate = commission_rate
         self.slippage = slippage
+        self.max_leverage = 1.0
         self.time_penalty = time_penalty
         self.drawdown_penalty = drawdown_penalty
         self.max_holding_ticks = max_holding_ticks
@@ -97,10 +100,21 @@ class ScalpingEnv:
 
     def _qty(self):
         atr = self.atr[self.current_index - 1]
+        price = self.prices[self.current_index]
         if atr <= 0:
-            return self.min_qty
-        stop_dist = atr * self.atr_multiplier_sl
-        return max(self.min_qty, (self.capital * self.risk_per_trade) / (stop_dist * self.point_value))
+            qty = self.min_qty
+        else:
+            stop_dist = atr * self.atr_multiplier_sl
+            qty = (self.capital * self.risk_per_trade) / (stop_dist * self.point_value)
+        if price > 0:
+            qty = min(qty, self.capital * self.max_leverage / price)
+        return max(self.min_qty, qty)
+
+    def _fees(self, price, qty):
+        return (
+            self.commission_per_qty * qty
+            + self.commission_rate * price * qty
+        )
 
     def _open(self, side, price):
         self.qty = self._qty()
@@ -121,12 +135,12 @@ class ScalpingEnv:
             )
         self.position = side
         self.entry_tick = self.current_index
-        self.capital -= self.commission_per_qty * self.qty
+        self.capital -= self._fees(self.entry_price, self.qty)
 
     def _close(self, fill_price):
         gross = (fill_price - self.entry_price) * self.qty
         pnl = gross if self.position == LONG else -gross
-        net = pnl - self.commission_per_qty * self.qty
+        net = pnl - self._fees(fill_price, self.qty)
         self.capital += net
         self.realized_pnl += net
         self.position = None

@@ -58,7 +58,7 @@ class TestWalkForward(unittest.TestCase):
     def test_fenetres_chronologiques(self):
         df = make_df(98000.0 + np.arange(1000) * 2.0)
         reports, summary = walk_forward_backtest(
-            ConstantModel(1), df, asset="BTC", n_folds=4, max_holding_ticks=10
+            ConstantModel(1), df, asset="XAU", n_folds=4, max_holding_ticks=10
         )
         self.assertEqual(len(reports), 4)
         windows = [r["window"] for r in reports]
@@ -186,7 +186,7 @@ class TestCostSensitivity(unittest.TestCase):
         self.assertGreaterEqual(rendements[0], rendements[2])
         import backtester
 
-        self.assertEqual(backtester.ASSET_COST_MODELS["BTC"]["slippage"], 0.5)
+        self.assertEqual(backtester.ASSET_COST_MODELS["BTC"]["slippage"], 0.01)
 
     def test_regimes(self):
         prices = np.concatenate(

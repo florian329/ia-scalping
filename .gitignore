@@ -6,4 +6,3 @@ __pycache__/
 .pytest_cache/
 user_data/
 freqtrade_integration/model/
-freqtrade_integration/IaScalpingStrategy.json

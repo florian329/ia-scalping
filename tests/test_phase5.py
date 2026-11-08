@@ -419,18 +419,18 @@ class TestExportExcel(unittest.TestCase):
 
 
 class TestCollectLong(unittest.TestCase):
-    def test_segments_et_reprise(self):
+    def _tmp_segments(self, n=3):
         import shutil
         import tempfile
         from pathlib import Path
 
-        from collect_long import concatenate, existing_segments, segments_dir
+        from collect_long import segments_dir
 
         tmp = Path(tempfile.mkdtemp())
         out = tmp / "collecte.csv"
         directory = segments_dir(out)
         directory.mkdir(parents=True)
-        for i in range(1, 4):
+        for i in range(1, n + 1):
             pd.DataFrame(
                 {
                     "timestamp": [f"2026-01-05 00:0{i-1}:00+00:00"],
@@ -438,13 +438,106 @@ class TestCollectLong(unittest.TestCase):
                     "last_volume": [1.0],
                 }
             ).to_csv(directory / f"seg_BTCUSDT_{i:04d}.csv", index=False)
+        self.addCleanup(shutil.rmtree, tmp)
+        return directory, out
 
+    def test_segments_et_concatenation(self):
+        from collect_long import concatenate, existing_segments
+
+        directory, out = self._tmp_segments(3)
         segs = existing_segments(directory, "BTCUSDT")
         self.assertEqual(len(segs), 3)
         df = concatenate(directory, "BTCUSDT", out)
         self.assertEqual(len(df), 3)
         self.assertTrue(out.exists())
-        shutil.rmtree(tmp)
+
+    def test_segment_valide_rejette_les_corrompus(self):
+        from pathlib import Path
+
+        from collect_long import segment_valide
+
+        directory, _ = self._tmp_segments(1)
+        bon = directory / "seg_BTCUSDT_0001.csv"
+        self.assertTrue(segment_valide(bon))
+        tronque = directory / "seg_BTCUSDT_0002.csv"
+        tronque.write_text("timestamp\n2026-01-05")  # colonne last_price absente
+        self.assertFalse(segment_valide(tronque))
+        vide = directory / "seg_BTCUSDT_0003.csv"
+        vide.write_text("")
+        self.assertFalse(segment_valide(vide))
+
+    def test_retries_jusqua_succes(self):
+        from collect_long import collect_segment_with_retries
+
+        appels = {"n": 0}
+
+        def faux_collect(duree, symbol, poll_interval, verbose, ticks_out=None):
+            appels["n"] += 1
+            if appels["n"] < 3:
+                return []
+            return [{"last_price": 76000.0, "last_volume": 1.0}]
+
+        sleeps = []
+        ticks, buffer = collect_segment_with_retries(
+            1, "BTCUSDT", 0.25, max_retries=3, retry_delay=5.0,
+            collect_fn=faux_collect, sleep_fn=sleeps.append,
+        )
+        self.assertEqual(appels["n"], 3)
+        self.assertEqual(sleeps, [5.0, 5.0])
+        self.assertEqual(len(ticks), 1)
+
+    def test_retries_epuises_renvoie_vide(self):
+        from collect_long import collect_segment_with_retries
+
+        sleeps = []
+        ticks, _ = collect_segment_with_retries(
+            1, "BTCUSDT", 0.25, max_retries=2, retry_delay=1.0,
+            collect_fn=lambda *a, **k: [], sleep_fn=sleeps.append,
+        )
+        self.assertEqual(ticks, [])
+        self.assertEqual(len(sleeps), 1)
+
+    def test_interruption_preserve_les_ticks_partiels(self):
+        from collect_long import collect_segment_with_retries
+
+        def faux_collect(duree, symbol, poll_interval, verbose, ticks_out=None):
+            if ticks_out is not None:
+                ticks_out.append({"last_price": 76000.0, "last_volume": 1.0})
+            raise KeyboardInterrupt()
+
+        buffer = []
+        with self.assertRaises(KeyboardInterrupt):
+            collect_segment_with_retries(
+                1, "BTCUSDT", 0.25, collect_fn=faux_collect, sleep_fn=lambda s: None,
+                ticks_out=buffer,
+            )
+        self.assertEqual(len(buffer), 1)
+
+    def test_detection_des_trous_temporels(self):
+        from collect_long import verifier_continuite
+
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    [
+                        "2026-01-05 00:00:00+00:00",
+                        "2026-01-05 00:00:10+00:00",
+                        "2026-01-05 00:00:20+00:00",
+                        "2026-01-05 00:45:00+00:00",
+                    ]
+                )
+            }
+        )
+        trous = verifier_continuite(df, gap_max_s=600)
+        self.assertEqual(len(trous), 1)
+
+    def test_dedoublonnage_a_la_concatenation(self):
+        from collect_long import concatenate
+
+        directory, out = self._tmp_segments(2)
+        df = concatenate(directory, "BTCUSDT", out)
+        self.assertFalse(df["timestamp"].duplicated().any())
+
 
 if __name__ == "__main__":
     unittest.main()

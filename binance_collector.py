@@ -10,23 +10,39 @@ Usage :
 
 import argparse
 import csv
+import logging
 import json
 import time
 import urllib.request
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 BASE_URL = "https://api.binance.com"
 DEPTH_LEVELS = 20
 
 
-def _get(path, params=None):
+def _get(path, params=None, _retried=False):
+    """Requete GET avec backoff sur rate-limit Binance (429/418).
+
+    Binance indique le delai de reprise via l'en-tete Retry-After ; on le
+    respecte puis on retente une fois. Les autres erreurs HTTP remontent.
+    """
     url = f"{BASE_URL}{path}"
     if params:
         url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
     req = urllib.request.Request(url, headers={"User-Agent": "ia-scalping-collector/1.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (429, 418) and not _retried:
+            attente = float(exc.headers.get("Retry-After", 10))
+            logger.warning("Rate limit Binance (%d) : pause %.0fs puis nouvel essai", exc.code, attente)
+            time.sleep(attente)
+            return _get(path, params, _retried=True)
+        raise
 
 
 def collect_tick(symbol, last_trade_id=None):
@@ -48,8 +64,10 @@ def collect_tick(symbol, last_trade_id=None):
     return tick
 
 
-def collect(duration_seconds, symbol="BTCUSDT", poll_interval=0.25, verbose=True):
-    ticks = []
+def collect(duration_seconds, symbol="BTCUSDT", poll_interval=0.25, verbose=True, ticks_out=None):
+    """Collecte pendant duration_seconds ; ticks_out (liste) est alimente au fil
+    de l'eau pour permettre une sauvegarde partielle en cas d'interruption."""
+    ticks = ticks_out if ticks_out is not None else []
     n_errors = 0
     start = time.time()
     while time.time() - start < duration_seconds:
@@ -58,7 +76,7 @@ def collect(duration_seconds, symbol="BTCUSDT", poll_interval=0.25, verbose=True
         except Exception as exc:
             n_errors += 1
             if verbose and n_errors % 10 == 1:
-                print(f"[collecteur] erreur ({exc.__class__.__name__}), reprise...")
+                logger.warning("erreur reseau (%s), reprise...", exc.__class__.__name__)
         time.sleep(poll_interval)
     if verbose:
         elapsed = time.time() - start

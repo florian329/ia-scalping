@@ -64,6 +64,40 @@ toute utilisation, et ne passez `dry_run` à `false` qu'après des semaines de v
   complète fonctionne ; la rentabilité dépend du signal (annotations réelles, plus de
   données), pas de l'intégration.
 
+## Hyperopt avec holdout strict (`hyperopt_holdout.py`)
+
+Le piège classique de l'hyperopt : optimiser sur tout l'historique puis s'étonner
+que le marché « ait changé ». Le script impose la discipline en 4 phases :
+
+```bash
+python freqtrade_integration/hyperopt_holdout.py \
+    --train 20261105-20261107 --holdout 20261107-20261108 --epochs 30
+```
+
+1. **Hyperopt** sur la période train uniquement (seuil d'entrée, espace `entry`) ;
+2. **Export** des meilleurs paramètres vers `user_data/strategies/IaScalpingStrategy.json` ;
+3. **Backtest holdout** sur une période jamais vue par l'hyperopt ;
+4. **Verdict** : train vs holdout — surajustement détecté = paramètres inutilisables.
+
+Validation sandbox (2026-11-08) : train +1,64 % (36 trades) vs holdout −0,04 % (1 trade)
+→ verdict « SURAJUSTEMENT ». Le système vous protège de vous-même.
+
+## Protections intégrées (stratégie)
+
+- **CooldownPeriod** (5 candles) : pause après chaque trade ;
+- **StoplossGuard** (4 stops en 60 candles → pause 30 candles) ;
+- **MaxDrawdown** (5 % de drawdown en 240 candles → pause 60 candles).
+
+## Alertes Telegram (optionnel)
+
+1. Créez un bot via [@BotFather](https://t.me/botfather) → récupérez le `token` ;
+2. Récupérez votre `chat_id` via [@userinfobot](https://t.me/userinfobot) ;
+3. Dans `config_ia_scalping.json` :
+```json
+"telegram": { "enabled": true, "token": "VOTRE_TOKEN", "chat_id": "VOTRE_CHAT_ID" }
+```
+Vous recevrez chaque trade, chaque anomalie, et pourrez envoyer `/stop` au bot.
+
 ## Licences
 
 FreqTrade et FreqUI sont sous **GPL-3.0** : toute distribution combinant ce code avec

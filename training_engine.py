@@ -7,10 +7,14 @@ Corrections vs version initiale :
 - Reproductibilite (seed).
 """
 
+import logging
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+logger = logging.getLogger(__name__)
 
 
 class ScalpingModelCheckpoint:
@@ -28,7 +32,7 @@ class ScalpingModelCheckpoint:
                 "best_loss": current_val_loss,
             }
             torch.save(state, self.filepath)
-            print(f" -> Nouveau record : modele sauvegarde a l'epoque {epoch}")
+            logger.info("Nouveau record : modele sauvegarde a l'epoque %d", epoch)
             return True
         return False
 
@@ -87,7 +91,7 @@ def train_model(
                 loss = criterion(outputs, batch_targets)
                 val_loss += loss.item() * batch_book.size(0)
         val_loss /= len(val_loader.dataset)
-        print(f"Epoch {epoch:>3d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
+        logger.info("Epoch %3d | train_loss=%.4f | val_loss=%.4f", epoch, train_loss, val_loss)
 
         improved = checkpoint_manager(val_loss, model, epoch, optimizer)
         if improved:
@@ -95,6 +99,6 @@ def train_model(
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= patience:
-                print(f"Early stopping a l'epoque {epoch} (patience={patience})")
+                logger.info("Early stopping a l'epoque %d (patience=%d)", epoch, patience)
                 break
     return checkpoint_manager.best_loss

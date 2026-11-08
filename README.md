@@ -105,15 +105,26 @@ structurellement la stratégie de la viabilité.
   (issus du tuning out-of-sample sur données réelles).
 - Disponible partout : backtester, environnement RL, boucle live.
 
+## Architecture (refactor qualite)
+
+- **`config.py`** : source de vérité unique — `AssetCosts` (dataclass gelée, frais/spread/slippage BTC) et `ExecutionConfig` (SL/TP ATR, timeouts, plancher TP, protections). Plus de constantes dupliquées dans trois fichiers.
+- **`execution.py`** : logique d'exécution unique — `fees_for`, `taker_entry/exit`, `compute_stop_tp` (plancher de TP), `MakerOrderBook` (remplissage, queue chasing, annulation). Consommée à l'identique par le backtester, l'environnement RL et la boucle live : **impossible de diverger**.
+- **`BacktestEngine`** (`backtester.py`) : classe à état explicite (plus de closures `nonlocal`), `run_backtest()` reste un wrapper compatible.
+- **Exceptions précises** dans les feeds : seules les erreurs réseau déclenchent une reconnexion ; `CCXTFeed` abandonne après N échecs consécutifs (pas de boucle infinie).
+- **Logging** : modules runtime sur `logging` (niveaux INFO/WARNING), scripts CLI avec `basicConfig`.
+- **Golden test** (`tests/test_golden.py`) : métriques gelées d'un scénario déterministe — toute dérive de comportement du backtest casse le CI.
+- **Typage** : annotations sur les modules noyau (config, execution, backtester).
+
 ## Tests
 
 ```bash
+python3 tests/test_golden.py         # 2 tests : non-regression numerique (metriques gelees)
 python3 tests/test_backtester.py    # 9 tests : backtester + money management
 python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
 python3 tests/test_phase4.py       # 14 tests : walk-forward, bootstrap, protections, labels pondérés, multi-segments
 python3 tests/test_phase5.py       # 16 tests : vectorisation, drift, annotations, calibration, tuning, nouvelles features
 ```
-57 tests au total, tous verts.
+69 tests au total, tous verts (dont le golden test de non-régression).
 
 ## Usage
 

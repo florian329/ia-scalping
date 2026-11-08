@@ -55,6 +55,9 @@ def load_norm_stats(df_path):
 
 
 def main():
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Live paper trading IA scalping")
     parser.add_argument("--asset", default="BTC", choices=["BTC"])
     parser.add_argument("--feed", default="csv", choices=["csv", "ccxt"])

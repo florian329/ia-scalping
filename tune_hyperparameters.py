@@ -114,6 +114,9 @@ def optuna_search(model, df, n_trials=20, seed=42, norm_stats=None, filters=None
 
 
 def main():
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Tuning des hyperparametres d'execution")
     parser.add_argument("--csv", default="market_data_sample.csv")
     parser.add_argument("--asset", default="BTC", choices=["BTC"])

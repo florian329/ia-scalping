@@ -4,11 +4,17 @@ Interface commune : un feed est un iterable de ticks (dicts) avec les cles
 last_price, last_volume, best_bid, best_ask et bid_size_i / ask_size_i.
 """
 
+import logging
 import time
+import urllib.error
 
 import pandas as pd
 
 REQUIRED_TICK_KEYS = ("last_price", "last_volume")
+
+NETWORK_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionError, OSError)
+
+logger = logging.getLogger(__name__)
 
 
 class CSVReplayFeed:
@@ -58,13 +64,16 @@ class ReconnectingFeed:
                 return
             except StopIteration:
                 return
-            except Exception as exc:
+            except NETWORK_ERRORS as exc:
                 retries += 1
                 self.reconnect_count += 1
                 if retries > self.max_retries:
                     raise
                 delay = min(self.base_delay * (2 ** (retries - 1)), self.max_delay)
-                print(f"[feed] Erreur ({exc.__class__.__name__}: {exc}), reconnexion {retries}/{self.max_retries} dans {delay:.1f}s")
+                logger.warning(
+                    "Erreur reseau (%s), reconnexion %d/%d dans %.1fs",
+                    exc.__class__.__name__, retries, self.max_retries, delay,
+                )
                 time.sleep(delay)
 
 
@@ -75,12 +84,14 @@ class CCXTFeed:
     garder le reste du pipeline utilisable sans cette dependance.
     """
 
-    def __init__(self, exchange_id="binance", symbol="BTC/USDT", sandbox=True, poll_interval=0.2, depth=5):
+    def __init__(self, exchange_id="binance", symbol="BTC/USDT", sandbox=True,
+                 poll_interval=0.2, depth=5, max_consecutive_errors=10):
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.sandbox = sandbox
         self.poll_interval = poll_interval
         self.depth = depth
+        self.max_consecutive_errors = max_consecutive_errors
 
     def _make_exchange(self):
         import ccxt
@@ -108,10 +119,17 @@ class CCXTFeed:
 
     def __iter__(self):
         exchange = self._make_exchange()
+        consecutive_errors = 0
         while True:
             try:
                 yield self._poll(exchange)
-            except Exception:
+                consecutive_errors = 0
+            except NETWORK_ERRORS:
+                consecutive_errors += 1
+                if consecutive_errors >= self.max_consecutive_errors:
+                    raise ConnectionError(
+                        f"{self.max_consecutive_errors} echecs consecutifs : abandon du flux {self.symbol}"
+                    )
                 exchange = self._make_exchange()
             time.sleep(self.poll_interval)
 

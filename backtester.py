@@ -1,39 +1,34 @@
-"""Backtester corrige pour le scalping IA.
+"""Backtester realiste pour le scalping IA BTC.
 
-Corrections vs version initiale :
-1. La quantite de position provient du money manager (plus de P&L "1 unite fixe").
-2. TP/SL bases sur l'ATR + timeout : les trades ne sont plus fermés au tick
-   suivant quoi qu'il arrive.
-3. Modele de couts par actif : spread, commission par unite/contrat, slippage.
-4. Anti look-ahead : la decision au tick t utilise les features <= t-1.
-5. Metriques completes : Sharpe, drawdown max, profit factor, expectancy,
-   win rate, frais totaux.
+Refactor en classe BacktestEngine : l'etat de la simulation (capital, position,
+ordre maker en attente, compteurs de protection) est explicite, la logique de
+couts/TP/SL vient du module execution.py (partage avec l'env RL et le live),
+et run_backtest() reste un wrapper compatible avec l'API historique.
 """
 
 import numpy as np
 import pandas as pd
 import torch
 
+from asset_filters import AssetFilters
+from config import ASSET_COST_MODELS, ExecutionConfig
+from dataset import BOOK_FEATURES, SEQ_FEATURES
+from execution import (
+    MakerOrderBook,
+    compute_stop_tp,
+    fees_for,
+    taker_entry,
+    taker_exit,
+)
 from money_management import ScalpingMoneyManager
 from model_pytorch import predict_action
-from dataset import BOOK_FEATURES, SEQ_FEATURES
-from asset_filters import AssetFilters
 
 FLAT, LONG, SHORT = 0, 1, -1
 
-ASSET_COST_MODELS = {
-    "BTC": {
-        "spread": 0.01,
-        "slippage": 0.01,
-        "commission_per_qty": 0.0,
-        "commission_rate": 0.001,
-        "maker_fee_rate": 0.0002,
-    },
-}
-
 
 class Trade:
-    def __init__(self, side, entry_index, entry_price, qty, stop_price, tp_price):
+    def __init__(self, side: int, entry_index: int, entry_price: float, qty: float,
+                 stop_price: float, tp_price: float):
         self.side = side
         self.entry_index = entry_index
         self.entry_price = entry_price
@@ -43,284 +38,283 @@ class Trade:
         self.exit_index = None
         self.exit_price = None
         self.exit_reason = None
+        self.net_pnl = 0.0
 
     @property
-    def pnl(self):
-        if self.exit_price is None:
-            return 0.0
-        gross = (self.exit_price - self.entry_price) * self.qty
-        return gross if self.side == LONG else -gross
-
-    @property
-    def direction(self):
+    def direction(self) -> int:
         return 1 if self.side == LONG else -1
 
-    def pnl_fill(self, fill_price):
+    def pnl_fill(self, fill_price: float) -> float:
         gross = (fill_price - self.entry_price) * self.qty
         return gross if self.side == LONG else -gross
 
 
-def run_backtest(
-    model,
-    df,
-    asset="BTC",
-    money_manager=None,
-    sequence_length=20,
-    device="cpu",
-    initial_capital=10000.0,
-    atr_multiplier_sl=1.69,
-    atr_multiplier_tp=2.42,
-    max_holding_ticks=36,
-    norm_stats=None,
-    seq_features=None,
-    confidence_threshold=0.0,
-    filters=None,
-    max_trades=None,
-    max_consecutive_losses=3,
-    cooldown_ticks=50,
-    vectorized=True,
-    inference_chunk_size=4096,
-    execution="taker",
-    maker_timeout_ticks=10,
-    min_tp_fee_multiple=3.0,
-    maker_replacements_max=3,
-):
-    """Simule la strategie sur df (features calculees par pipeline_data.build_features).
+class _MarketContext:
+    """Tableaux derives du DataFrame, partages par les methodes du moteur."""
 
-    Retourne un dict : capital final, metriques et liste des trades.
+    def __init__(self, df: pd.DataFrame, seq_features, norm_stats):
+        book = df[BOOK_FEATURES].to_numpy(dtype=np.float32)
+        if norm_stats is not None:
+            mean, std = norm_stats
+            book = (book - mean) / (std + 1e-8)
+        self.book = book
+        self.seq = df[seq_features].to_numpy(dtype=np.float32)
+        self.prices = df["last_price"].to_numpy(dtype=np.float64)
+        self.atr = (
+            df["ATR_Tick"].to_numpy(dtype=np.float64)
+            if "ATR_Tick" in df
+            else np.full(len(df), 1.0)
+        )
+        self.raw_obi = df["OBI"].to_numpy(dtype=np.float64) if "OBI" in df else np.zeros(len(df))
+        self.timestamps = (
+            df["timestamp"].to_numpy() if "timestamp" in df else [None] * len(df)
+        )
+        self.best_bid = df["best_bid"].to_numpy(dtype=np.float64) if "best_bid" in df else None
+        self.best_ask = df["best_ask"].to_numpy(dtype=np.float64) if "best_ask" in df else None
+
+
+class BacktestEngine:
+    """Moteur de simulation : configuration explicite, etat explicite.
+
+    Toute la logique de couts/TP/SL/remplissage maker est deleguee a
+    execution.py — la meme que celle de l'environnement RL et de la boucle live.
     """
-    seq_features = seq_features or SEQ_FEATURES
-    costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
-    if asset != "BTC":
-        raise ValueError("Seul le BTC est supporte par cette strategie.")
-    if money_manager is None:
-        money_manager = ScalpingMoneyManager(risk_per_trade=0.005, point_value=1.0)
 
-    book = df[BOOK_FEATURES].to_numpy(dtype=np.float32)
-    if norm_stats is not None:
-        mean, std = norm_stats
-        book = (book - mean) / (std + 1e-8)
-    seq = df[seq_features].to_numpy(dtype=np.float32)
-    prices = df["last_price"].to_numpy(dtype=np.float64)
-    atr = df["ATR_Tick"].to_numpy(dtype=np.float64) if "ATR_Tick" in df else np.full(len(df), 1.0)
-    raw_obi = df["OBI"].to_numpy(dtype=np.float64) if "OBI" in df else np.zeros(len(df))
-    timestamps = df["timestamp"].to_numpy() if "timestamp" in df else [None] * len(df)
-
-    capital = initial_capital
-    position = None
-    trades = []
-    equity_curve = np.full(len(df), np.nan)
-    equity_curve[:sequence_length] = capital
-    total_fees = 0.0
-    consecutive_losses = 0
-    cooldown_until = -1
-
-    actions_cache, probs_cache = None, None
-    if vectorized:
-        actions_cache, probs_cache = _batch_predict(
-            model, book, seq, sequence_length, device, inference_chunk_size
+    def __init__(
+        self,
+        model,
+        cfg: ExecutionConfig,
+        costs,
+        money_manager: ScalpingMoneyManager | None = None,
+        device: str = "cpu",
+        norm_stats=None,
+        seq_features=None,
+        filters: AssetFilters | None = None,
+        vectorized: bool = True,
+        inference_chunk_size: int = 4096,
+    ):
+        cfg.validate()
+        self.model = model
+        self.cfg = cfg
+        self.costs = costs
+        self.device = device
+        self.norm_stats = norm_stats
+        self.seq_features = seq_features or SEQ_FEATURES
+        self.filters = filters
+        self.vectorized = vectorized
+        self.inference_chunk_size = inference_chunk_size
+        self.money_manager = money_manager or ScalpingMoneyManager(
+            risk_per_trade=cfg.risk_per_trade, point_value=1.0, max_leverage=cfg.max_leverage
         )
+        self.ctx: _MarketContext | None = None
+        self.actions_cache = None
+        self.probs_cache = None
+        self.trades: list[Trade] = []
+        self.capital = cfg.initial_capital
+        self.total_fees = 0.0
+        self.position: Trade | None = None
+        self.order_book: MakerOrderBook | None = None
+        self.consecutive_losses = 0
+        self.cooldown_until = -1
 
-    def _fees_for(price, qty, fee_rate=None):
-        rate = costs.get("commission_rate", 0.0) if fee_rate is None else fee_rate
-        return (
-            costs.get("commission_per_qty", 0.0) * qty
-            + rate * price * qty
-        )
+    def run(self, df: pd.DataFrame) -> dict:
+        cfg = self.cfg
+        self.ctx = _MarketContext(df, self.seq_features, self.norm_stats)
+        self.capital = cfg.initial_capital
+        self.trades = []
+        self.total_fees = 0.0
+        self.position = None
+        self.order_book = MakerOrderBook(cfg, self.costs)
+        self.consecutive_losses = 0
+        self.cooldown_until = -1
+        equity_curve = np.full(len(df), np.nan)
+        equity_curve[: cfg.sequence_length] = self.capital
 
-    def _tp_distance(entry, atr_value, entry_fee_rate, exit_fee_rate, taker_entry):
-        """TP = max(multiple ATR, plancher k x couts aller-retour).
+        self.actions_cache, self.probs_cache = (None, None)
+        if self.vectorized:
+            self.actions_cache, self.probs_cache = _batch_predict(
+                self.model,
+                self.ctx.book,
+                self.ctx.seq,
+                cfg.sequence_length,
+                self.device,
+                self.inference_chunk_size,
+            )
 
-        Sans plancher, un TP serre peut etre plus petit que les frais : chaque
-        trade gagnant remplit le courtier, pas le compte."""
-        atr_dist = atr_value * atr_multiplier_sl * (atr_multiplier_tp / atr_multiplier_sl)
-        if min_tp_fee_multiple <= 0:
-            return atr_dist
-        entry_cost = (costs["spread"] / 2.0 + costs["slippage"]) if taker_entry else 0.0
-        fees_price = (entry_fee_rate + exit_fee_rate) * entry
-        round_trip = fees_price + entry_cost
-        return max(atr_dist, min_tp_fee_multiple * round_trip)
+        for t in range(cfg.sequence_length, len(df)):
+            price = self.ctx.prices[t]
+            self._manage_open_position(t, price)
+            if self.position is not None:
+                unrealized = (
+                    (price - self.position.entry_price)
+                    * self.position.qty
+                    * self.position.direction
+                )
+                equity_curve[t] = self.capital + unrealized
+            else:
+                equity_curve[t] = self.capital
+            self._update_pending_order(t, price)
+            self._maybe_enter(t, price)
 
-    def close_position(trade, exit_index, exit_price, reason):
-        nonlocal capital, position, total_fees, consecutive_losses, cooldown_until
-        maker_exit = execution == "maker" and reason == "take_profit"
-        if maker_exit:
-            fill = exit_price
-            fees = _fees_for(fill, trade.qty, fee_rate=costs.get("maker_fee_rate", 0.0))
-            slip_cost = 0.0
+        if self.position is not None:
+            fill = taker_exit(self.costs, self.position.side, self.ctx.prices[-1])
+            self._settle(self.position, len(self.ctx.prices) - 1, fill, "end_of_data", taker_fees=True)
+
+        report = _build_report(self.trades, equity_curve, cfg.initial_capital, self.total_fees)
+        report["execution"] = cfg.execution
+        report["maker_fills"] = self.order_book.fills
+        report["maker_cancels"] = self.order_book.cancels
+        report["maker_replacements"] = self.order_book.replacements
+        return report
+
+    def _manage_open_position(self, t: int, price: float) -> None:
+        pos = self.position
+        if pos is None:
+            return
+        costs = self.costs
+        maker_exit = self.cfg.execution == "maker"
+        if pos.side == LONG:
+            if price <= pos.stop_price:
+                fill = taker_exit(costs, LONG, pos.stop_price)
+                self._settle(pos, t, fill, "stop", taker_fees=True)
+            elif price >= pos.tp_price:
+                self._settle(
+                    pos,
+                    t,
+                    pos.tp_price,
+                    "take_profit",
+                    fee_rate=costs.maker_fee_rate if maker_exit else None,
+                    taker_fees=not maker_exit,
+                )
         else:
-            slip = costs["slippage"]
-            fill = exit_price - slip if trade.side == LONG else exit_price + slip
-            fees = _fees_for(fill, trade.qty)
-            slip_cost = slip * trade.qty * money_manager.point_value
+            if price >= pos.stop_price:
+                fill = taker_exit(costs, SHORT, pos.stop_price)
+                self._settle(pos, t, fill, "stop", taker_fees=True)
+            elif price <= pos.tp_price:
+                self._settle(
+                    pos,
+                    t,
+                    pos.tp_price,
+                    "take_profit",
+                    fee_rate=costs.maker_fee_rate if maker_exit else None,
+                    taker_fees=not maker_exit,
+                )
+        if self.position is not None and t - self.position.entry_index >= self.cfg.max_holding_ticks:
+            fill = taker_exit(self.costs, self.position.side, price)
+            self._settle(self.position, t, fill, "timeout", taker_fees=True)
+
+    def _settle(self, trade: Trade, t: int, fill: float, reason: str, fee_rate=None, taker_fees=False) -> None:
+        costs = self.costs
+        rate = costs.commission_rate if (fee_rate is None and taker_fees) else fee_rate
+        fees = fees_for(costs, fill, trade.qty, fee_rate=rate)
         net = trade.pnl_fill(fill) - fees
-        capital += net
-        total_fees += fees + slip_cost
-        if net < 0:
-            consecutive_losses += 1
-            if consecutive_losses >= max_consecutive_losses:
-                cooldown_until = exit_index + cooldown_ticks
-                consecutive_losses = 0
-        else:
-            consecutive_losses = 0
-        trade.exit_index = exit_index
+        self.capital += net
+        self.total_fees += fees
+        trade.exit_index = t
         trade.exit_price = fill
         trade.exit_reason = reason
         trade.net_pnl = net
-        trades.append(trade)
-        position = None
+        self.trades.append(trade)
+        self.position = None
+        if net < 0:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= self.cfg.max_consecutive_losses:
+                self.cooldown_until = trade.entry_index + self.cfg.cooldown_ticks
+                self.consecutive_losses = 0
+        else:
+            self.consecutive_losses = 0
 
-    def open_position(side, t, action_price, entry_override=None, fee_rate=None):
-        nonlocal capital, position, total_fees
-        qty = money_manager.calculate_position_size(
-            capital, atr[t - 1], price=entry_override if entry_override is not None else action_price
+    def _update_pending_order(self, t: int, price: float) -> None:
+        if self.position is not None:
+            if self.order_book.has_pending():
+                self.order_book.clear()
+            return
+        order = self.order_book.update(
+            price,
+            t,
+            self.ctx.best_bid[t] if self.ctx.best_bid is not None else None,
+            self.ctx.best_ask[t] if self.ctx.best_ask is not None else None,
+        )
+        if order is not None:
+            self._open_position(
+                order.side,
+                t,
+                entry_price=order.limit,
+                fee_rate=self.costs.maker_fee_rate,
+                taker_entry_fill=False,
+            )
+
+    def _maybe_enter(self, t: int, price: float) -> None:
+        cfg = self.cfg
+        if self.position is not None or self.order_book.has_pending():
+            return
+        if t < self.cooldown_until:
+            return
+        if cfg.max_trades is not None and len(self.trades) >= cfg.max_trades:
+            return
+        if self.actions_cache is not None:
+            k = t - cfg.sequence_length
+            action = int(self.actions_cache[k])
+            probs = self.probs_cache[k]
+        else:
+            action, probs = predict_action(
+                self.model,
+                self.ctx.book[t - 1],
+                self.ctx.seq[t - cfg.sequence_length : t],
+                device=self.device,
+            )
+        if probs[action] < cfg.confidence_threshold or action not in (1, 2):
+            return
+        side = 1 if action == 1 else -1
+        if self.filters is not None:
+            allowed, _ = self.filters.trade_allowed(
+                side, self.ctx.raw_obi[t - 1], self.ctx.timestamps[t - 1]
+            )
+            if not allowed:
+                return
+        if cfg.execution == "maker":
+            if side > 0:
+                if self.ctx.best_bid is not None:
+                    limit = float(self.ctx.best_bid[t])
+                else:
+                    limit = price - self.costs.spread / 2.0
+            else:
+                if self.ctx.best_ask is not None:
+                    limit = float(self.ctx.best_ask[t])
+                else:
+                    limit = price + self.costs.spread / 2.0
+            self.order_book.place(side, limit, t)
+        else:
+            entry = taker_entry(self.costs, side, price)
+            self._open_position(side, t, entry_price=entry, fee_rate=None, taker_entry_fill=True)
+
+    def _open_position(self, side: int, t: int, entry_price: float, fee_rate, taker_entry_fill: bool) -> None:
+        atr_value = self.ctx.atr[t - 1]
+        qty = self.money_manager.calculate_position_size(
+            self.capital, atr_value, self.cfg.atr_multiplier_sl, price=entry_price
         )
         if qty <= 0:
             return
-        half_spread = costs["spread"] / 2.0
-        slip = costs["slippage"]
-        if entry_override is not None:
-            entry = entry_override
-        elif side == LONG:
-            entry = action_price + half_spread + slip
-        else:
-            entry = action_price - half_spread - slip
-        entry_fee_rate = (
-            costs.get("commission_rate", 0.0)
-            if fee_rate is None
-            else fee_rate
+        stop, tp = compute_stop_tp(
+            self.cfg,
+            self.costs,
+            side,
+            entry_price,
+            atr_value,
+            entry_fee_rate=fee_rate,
+            taker_entry_fill=taker_entry_fill,
         )
-        exit_fee_rate = (
-            costs.get("maker_fee_rate", 0.0)
-            if execution == "maker"
-            else costs.get("commission_rate", 0.0)
+        fees = fees_for(self.costs, entry_price, qty, fee_rate=fee_rate)
+        self.capital -= fees
+        self.total_fees += fees
+        self.position = Trade(
+            LONG if side > 0 else SHORT, t, entry_price, qty, stop, tp
         )
-        taker_entry = fee_rate is None
-        tp_dist = _tp_distance(
-            entry, atr[t - 1], entry_fee_rate, exit_fee_rate, taker_entry
-        )
-        if side == LONG:
-            stop = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry + tp_dist
-        else:
-            stop = entry + money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry - tp_dist
-        fees = _fees_for(entry, qty, fee_rate=fee_rate)
-        capital -= fees
-        total_fees += fees
-        position = Trade(side, t, entry, qty, stop, tp)
-
-    best_bid = df["best_bid"].to_numpy(dtype=np.float64) if "best_bid" in df else None
-    best_ask = df["best_ask"].to_numpy(dtype=np.float64) if "best_ask" in df else None
-    pending = None
-    maker_fills = 0
-    maker_cancels = 0
-    maker_replacements = 0
-
-    for t in range(sequence_length, len(df)):
-        price = prices[t]
-        if position is not None:
-            if position.side == LONG:
-                if price <= position.stop_price:
-                    close_position(position, t, position.stop_price, "stop")
-                elif price >= position.tp_price:
-                    close_position(position, t, position.tp_price, "take_profit")
-            else:
-                if price >= position.stop_price:
-                    close_position(position, t, position.stop_price, "stop")
-                elif price <= position.tp_price:
-                    close_position(position, t, position.tp_price, "take_profit")
-            if position is not None and t - position.entry_index >= max_holding_ticks:
-                close_position(position, t, price, "timeout")
-
-        if position is not None:
-            unrealized = (price - position.entry_price) * position.qty * position.direction
-            equity_curve[t] = capital + unrealized
-        else:
-            equity_curve[t] = capital
-        if pending is not None:
-            if position is not None:
-                pending = None
-                maker_cancels += 1
-            else:
-                filled = False
-                if pending["side"] == LONG and price <= pending["limit"]:
-                    filled = True
-                elif pending["side"] == SHORT and price >= pending["limit"]:
-                    filled = True
-                elif t - pending["placed_at"] >= maker_timeout_ticks:
-                    if pending["replacements"] < maker_replacements_max:
-                        step = costs["spread"]
-                        if pending["side"] == LONG:
-                            ask_ref = best_ask[t] if best_ask is not None else price + costs["spread"] / 2.0
-                            pending["limit"] = min(pending["limit"] + step, ask_ref)
-                        else:
-                            bid_ref = best_bid[t] if best_bid is not None else price - costs["spread"] / 2.0
-                            pending["limit"] = max(pending["limit"] - step, bid_ref)
-                        pending["placed_at"] = t
-                        pending["replacements"] += 1
-                        maker_replacements += 1
-                    else:
-                        pending = None
-                        maker_cancels += 1
-                if filled:
-                    open_position(
-                        pending["side"],
-                        t,
-                        price,
-                        entry_override=pending["limit"],
-                        fee_rate=costs.get("maker_fee_rate", 0.0),
-                    )
-                    if position is not None:
-                        maker_fills += 1
-                    pending = None
-
-        in_cooldown = t < cooldown_until
-        quota_reached = max_trades is not None and len(trades) >= max_trades
-        if position is None and pending is None and not in_cooldown and not quota_reached:
-            if actions_cache is not None:
-                k = t - sequence_length
-                action = int(actions_cache[k])
-                probs = probs_cache[k]
-            else:
-                action, probs = predict_action(
-                    model, book[t - 1], seq[t - sequence_length : t], device=device
-                )
-            if probs[action] >= confidence_threshold and action in (1, 2):
-                side = 1 if action == 1 else -1
-                allowed = True
-                if filters is not None:
-                    allowed, _ = filters.trade_allowed(side, raw_obi[t - 1], timestamps[t - 1])
-                if allowed:
-                    if execution == "maker":
-                        if side > 0:
-                            limit = best_bid[t] if best_bid is not None else price - costs["spread"] / 2.0
-                        else:
-                            limit = best_ask[t] if best_ask is not None else price + costs["spread"] / 2.0
-                        pending = {
-                            "side": LONG if side > 0 else SHORT,
-                            "limit": float(limit),
-                            "placed_at": t,
-                            "replacements": 0,
-                        }
-                    else:
-                        open_position(LONG if side > 0 else SHORT, t, price)
-
-    if position is not None:
-        close_position(position, len(df) - 1, prices[-1], "end_of_data")
-
-    report = _build_report(trades, equity_curve, initial_capital, total_fees)
-    report["execution"] = execution
-    report["maker_fills"] = maker_fills
-    report["maker_cancels"] = maker_cancels
-    report["maker_replacements"] = maker_replacements
-    return report
 
 
 def _batch_predict(model, book, seq, sequence_length, device, chunk_size=4096):
-    """Inference vectorisee : predit toutes les actions en paquets au lieu d'un
-    appel par tick. ~50x plus rapide sur de gros volumes ; meme resultat que le
-    mode sequentiel (le modele est sans etat entre les ticks)."""
+    """Inference vectorisee : predit toutes les actions en paquets. Meme resultat
+    que le mode sequentiel (le modele est sans etat entre les ticks)."""
     n = len(book)
     n_steps = n - sequence_length
     if n_steps <= 0:
@@ -345,9 +339,7 @@ def _batch_predict(model, book, seq, sequence_length, device, chunk_size=4096):
 def _build_report(trades, equity_curve, initial_capital, total_fees):
     equity = equity_curve[~np.isnan(equity_curve)]
     final_capital = float(equity[-1]) if len(equity) else initial_capital
-    pnls = np.array(
-        [getattr(tr, "net_pnl", tr.pnl_fill(tr.exit_price)) for tr in trades]
-    )
+    pnls = np.array([getattr(tr, "net_pnl", tr.pnl_fill(tr.exit_price)) for tr in trades])
     wins = pnls[pnls > 0]
     losses = pnls[pnls < 0]
     gross_win = wins.sum()
@@ -383,9 +375,70 @@ def print_report(report):
     print(f"Rendement total   : {report['total_return_pct']:>11.2f} %")
     print(f"Nombre de trades  : {report['n_trades']:>12d}")
     print(f"Win rate          : {report['win_rate']:>11.2f} %")
-    print(f"Profit factor     : {report['profit_factor']:>12.2f}")
-    print(f"Expectancy/trade  : {report['expectancy_per_trade']:>11.2f} $")
+    profit_factor = report["profit_factor"]
+    pf_display = "inf" if profit_factor == float("inf") else f"{profit_factor:.2f}"
+    print(f"Profit factor     : {pf_display:>12}")
+    print(f"Expectancy/trade : {report['expectancy_per_trade']:>11.2f} $")
     print(f"Max drawdown      : {report['max_drawdown_pct']:>11.2f} %")
     print(f"Sharpe (annualise): {report['sharpe']:>12.2f}")
     print(f"Frais totaux      : {report['total_fees']:>11.2f} $")
     print("=" * 60)
+
+
+def run_backtest(
+    model,
+    df,
+    asset="BTC",
+    money_manager=None,
+    sequence_length=20,
+    device="cpu",
+    initial_capital=10000.0,
+    atr_multiplier_sl=1.69,
+    atr_multiplier_tp=2.42,
+    max_holding_ticks=36,
+    norm_stats=None,
+    seq_features=None,
+    confidence_threshold=0.0,
+    filters=None,
+    max_trades=None,
+    max_consecutive_losses=3,
+    cooldown_ticks=50,
+    vectorized=True,
+    inference_chunk_size=4096,
+    execution="taker",
+    maker_timeout_ticks=10,
+    min_tp_fee_multiple=3.0,
+    maker_replacements_max=3,
+):
+    """Wrapper compatible : construit ExecutionConfig + BacktestEngine et lance le run."""
+    if asset != "BTC":
+        raise ValueError("Seul le BTC est supporte par cette strategie.")
+    costs = ASSET_COST_MODELS[asset]
+    cfg = ExecutionConfig(
+        atr_multiplier_sl=atr_multiplier_sl,
+        atr_multiplier_tp=atr_multiplier_tp,
+        max_holding_ticks=max_holding_ticks,
+        execution=execution,
+        maker_timeout_ticks=maker_timeout_ticks,
+        maker_replacements_max=maker_replacements_max,
+        min_tp_fee_multiple=min_tp_fee_multiple,
+        confidence_threshold=confidence_threshold,
+        sequence_length=sequence_length,
+        initial_capital=initial_capital,
+        max_trades=max_trades,
+        max_consecutive_losses=max_consecutive_losses,
+        cooldown_ticks=cooldown_ticks,
+    )
+    engine = BacktestEngine(
+        model,
+        cfg,
+        costs,
+        money_manager=money_manager,
+        device=device,
+        norm_stats=norm_stats,
+        seq_features=seq_features,
+        filters=filters,
+        vectorized=vectorized,
+        inference_chunk_size=inference_chunk_size,
+    )
+    return engine.run(df)

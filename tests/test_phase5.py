@@ -61,18 +61,22 @@ class TestVectorizedBacktest(unittest.TestCase):
         self.assertEqual(seq_report["n_trades"], vec_report["n_trades"])
         self.assertAlmostEqual(seq_report["final_capital"], vec_report["final_capital"], places=6)
 
-    def test_plus_rapide_que_le_sequentiel(self):
+    def test_plus_rapide_avec_un_vrai_modele(self):
         import time
 
-        df = make_df(98000.0 + np.arange(3000) * 0.5)
-        model = ConstantModel(1)
+        torch.manual_seed(0)
+        model = ScalpingMultimodalNet(order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=32)
+        model.eval()
+        df = make_df(98000.0 + np.arange(1500) * 0.5)
+        run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=False)
+        run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=True)
         t0 = time.perf_counter()
         run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=False)
         t_seq = time.perf_counter() - t0
         t0 = time.perf_counter()
         run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=True)
         t_vec = time.perf_counter() - t0
-        self.assertLess(t_vec, t_seq * 1.5)
+        self.assertLess(t_vec, t_seq)
 
 
 class TestDriftMonitors(unittest.TestCase):
@@ -377,6 +381,41 @@ class TestMakerReplacements(unittest.TestCase):
         self.assertEqual(report["n_trades"], 0)
 
 
+
+
+class TestExportExcel(unittest.TestCase):
+    def test_excel_genere_et_colore(self):
+        import os
+        import tempfile
+
+        from backtester import run_backtest
+        from export_trades_excel import export_trades_to_excel
+
+        base = 76000.0 + 0.5 * ((-1) ** np.arange(80))
+        prices = np.concatenate([base, [75998.0], 76000.0 + np.arange(1, 150) * 20.0])
+        df = make_df(prices)
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", initial_capital=1000.0,
+            max_holding_ticks=1000, execution="maker",
+        )
+        self.assertGreater(report["n_trades"], 0)
+        path = os.path.join(tempfile.gettempdir(), "test_export_excel.xlsx")
+        export_trades_to_excel(report, path, df=df)
+        self.assertTrue(os.path.exists(path))
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path)
+        self.assertIn("Trades", wb.sheetnames)
+        self.assertIn("Resume", wb.sheetnames)
+        ws = wb["Trades"]
+        self.assertEqual(ws.max_row - 1, report["n_trades"])
+        colored = 0
+        for row in ws.iter_rows(min_row=2):
+            cell = row[7]
+            rgb = str(cell.fill.start_color.rgb)
+            if "C6EFCE" in rgb or "FFC7CE" in rgb:
+                colored += 1
+        self.assertEqual(colored, report["n_trades"])
 
 if __name__ == "__main__":
     unittest.main()

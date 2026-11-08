@@ -166,6 +166,7 @@ def run_backtest(
         trade.exit_index = exit_index
         trade.exit_price = fill
         trade.exit_reason = reason
+        trade.net_pnl = net
         trades.append(trade)
         position = None
 
@@ -344,7 +345,9 @@ def _batch_predict(model, book, seq, sequence_length, device, chunk_size=4096):
 def _build_report(trades, equity_curve, initial_capital, total_fees):
     equity = equity_curve[~np.isnan(equity_curve)]
     final_capital = float(equity[-1]) if len(equity) else initial_capital
-    pnls = np.array([tr.pnl_fill(tr.exit_price) for tr in trades])
+    pnls = np.array(
+        [getattr(tr, "net_pnl", tr.pnl_fill(tr.exit_price)) for tr in trades]
+    )
     wins = pnls[pnls > 0]
     losses = pnls[pnls < 0]
     gross_win = wins.sum()

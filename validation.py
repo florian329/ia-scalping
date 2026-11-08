@@ -78,7 +78,9 @@ def bootstrap_metrics(trades, n_bootstrap=2000, ci=0.95, seed=42):
             "ci": ci,
         }
     if hasattr(trades[0], "pnl_fill"):
-        pnls = np.array([t.pnl_fill(t.exit_price) for t in trades])
+        pnls = np.array(
+            [getattr(t, "net_pnl", t.pnl_fill(t.exit_price)) for t in trades]
+        )
     else:
         pnls = np.array(trades, dtype=float)
     rng = np.random.default_rng(seed)

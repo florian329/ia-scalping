@@ -7,8 +7,6 @@ Répond aux biais restants du backtest classique :
 - régimes de marché confondus -> métriques segmentées.
 """
 
-import copy
-
 import numpy as np
 import pandas as pd
 
@@ -112,8 +110,7 @@ def run_cost_sensitivity(model, df, asset="BTC", slippage_multipliers=(0.5, 1.0,
     base = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
     for mult in slippage_multipliers:
         original = ASSET_COST_MODELS.get(asset)
-        stressed = copy.deepcopy(base)
-        stressed["slippage"] = base["slippage"] * mult
+        stressed = base.with_slippage(mult)
         ASSET_COST_MODELS[asset] = stressed
         try:
             report = run_backtest(model, df, asset=asset, **backtest_kwargs)
@@ -123,7 +120,7 @@ def run_cost_sensitivity(model, df, asset="BTC", slippage_multipliers=(0.5, 1.0,
         results.append(
             {
                 "slippage_multiplier": mult,
-                "slippage": stressed["slippage"],
+                "slippage": stressed.slippage,
                 "total_return_pct": report["total_return_pct"],
                 "n_trades": report["n_trades"],
                 "expectancy_per_trade": report["expectancy_per_trade"],

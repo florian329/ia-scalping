@@ -10,6 +10,14 @@ Interface type Gymnasium (reset/step) sans dependance externe :
 import numpy as np
 
 from dataset import BOOK_FEATURES, SEQ_FEATURES
+from execution import (
+    MakerOrderBook,
+    compute_stop_tp,
+    fees_for,
+    taker_entry,
+    taker_exit,
+)
+from config import ExecutionConfig
 
 FLAT, LONG, SHORT = 0, 1, -1
 
@@ -104,6 +112,7 @@ class ScalpingEnv:
         self.peak_capital = self.initial_capital
         self.position = None
         self.pending = None
+        self.order_book = None
         self.entry_price = 0.0
         self.stop_price = 0.0
         self.tp_price = 0.0
@@ -132,39 +141,51 @@ class ScalpingEnv:
         self.qty = self._qty()
         if self.qty <= 0:
             return
-        half = self.spread / 2.0
         if entry_override is not None:
-            self.entry_price = entry_override
-        elif side == LONG:
-            self.entry_price = price + half + self.slippage
+            entry = entry_override
         else:
-            self.entry_price = price - half - self.slippage
+            entry = taker_entry(self._costs(), side, price)
         atr_value = self.atr[self.current_index - 1]
-        atr_tp = atr_value * self.atr_multiplier_tp
-        if self.min_tp_fee_multiple > 0:
-            entry_fee_rate = self.maker_fee_rate if fee_rate is not None else self.commission_rate
-            exit_fee_rate = self.maker_fee_rate if self.execution == "maker" else self.commission_rate
-            entry_cost = 0.0 if fee_rate is not None else self.spread / 2.0 + self.slippage
-            round_trip = (entry_fee_rate + exit_fee_rate) * self.entry_price + entry_cost
-            atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
-        if side == LONG:
-            self.stop_price = self.entry_price - atr_value * self.atr_multiplier_sl
-            self.tp_price = self.entry_price + atr_tp
-        else:
-            self.stop_price = self.entry_price + atr_value * self.atr_multiplier_sl
-            self.tp_price = self.entry_price - atr_tp
+        cfg = self._exec_cfg()
+        stop, tp = compute_stop_tp(
+            cfg,
+            self._costs(),
+            side,
+            entry,
+            atr_value,
+            entry_fee_rate=fee_rate,
+            taker_entry_fill=fee_rate is None,
+        )
+        self.entry_price = entry
+        self.stop_price = stop
+        self.tp_price = tp
         self.position = side
         self.entry_tick = self.current_index
-        self.capital -= self._fees(self.entry_price, self.qty, fee_rate=fee_rate)
+        self.capital -= fees_for(self._costs(), entry, self.qty, fee_rate=fee_rate)
 
     def _close(self, fill_price, fee_rate=None):
         gross = (fill_price - self.entry_price) * self.qty
         pnl = gross if self.position == LONG else -gross
-        net = pnl - self._fees(fill_price, self.qty, fee_rate=fee_rate)
+        net = pnl - fees_for(self._costs(), fill_price, self.qty, fee_rate=fee_rate)
         self.capital += net
         self.realized_pnl += net
         self.position = None
         return net
+
+    def _costs(self):
+        from config import ASSET_COST_MODELS
+
+        return ASSET_COST_MODELS["BTC"]
+
+    def _exec_cfg(self):
+        return ExecutionConfig(
+            atr_multiplier_sl=self.atr_multiplier_sl,
+            atr_multiplier_tp=self.atr_multiplier_tp,
+            execution=self.execution,
+            min_tp_fee_multiple=self.min_tp_fee_multiple,
+            maker_timeout_ticks=self.maker_timeout_ticks,
+            maker_replacements_max=self.maker_replacements_max,
+        )
 
     def step(self, action):
         t = self.current_index
@@ -172,20 +193,19 @@ class ScalpingEnv:
         step_reward = 0.0
         done = False
 
+        maker_tp = self.execution == "maker"
         if self.position == LONG:
             if price <= self.stop_price:
-                step_reward += self._close(self.stop_price - self.slippage)
+                step_reward += self._close(taker_exit(self._costs(), LONG, self.stop_price))
             elif price >= self.tp_price:
-                maker_tp = self.execution == "maker"
                 step_reward += self._close(
                     self.tp_price,
                     fee_rate=self.maker_fee_rate if maker_tp else None,
                 )
         elif self.position == SHORT:
             if price >= self.stop_price:
-                step_reward += self._close(self.stop_price + self.slippage)
+                step_reward += self._close(taker_exit(self._costs(), SHORT, self.stop_price))
             elif price <= self.tp_price:
-                maker_tp = self.execution == "maker"
                 step_reward += self._close(
                     self.tp_price,
                     fee_rate=self.maker_fee_rate if maker_tp else None,
@@ -195,31 +215,22 @@ class ScalpingEnv:
             held_ticks = t - self.entry_tick
             step_reward -= self.time_penalty * held_ticks
             if held_ticks >= self.max_holding_ticks:
-                fill = price - self.slippage if self.position == LONG else price + self.slippage
-                step_reward += self._close(fill)
+                step_reward += self._close(taker_exit(self._costs(), self.position, price))
 
+        if self.order_book is None:
+            self.order_book = MakerOrderBook(self._exec_cfg(), self._costs())
         if self.pending is not None and self.position is None:
-            if (
-                (self.pending["side"] == LONG and price <= self.pending["limit"])
-                or (self.pending["side"] == SHORT and price >= self.pending["limit"])
-            ):
+            filled_order = self.order_book.update(price, t, None, None)
+            if filled_order is not None:
                 self._open(
-                    self.pending["side"],
+                    filled_order.side,
                     price,
-                    entry_override=self.pending["limit"],
+                    entry_override=filled_order.limit,
                     fee_rate=self.maker_fee_rate,
                 )
-            elif t - self.pending["placed_at"] >= self.maker_timeout_ticks:
-                if self.pending["replacements"] < self.maker_replacements_max:
-                    step = self.spread
-                    if self.pending["side"] == LONG:
-                        self.pending["limit"] = self.pending["limit"] + step
-                    else:
-                        self.pending["limit"] = self.pending["limit"] - step
-                    self.pending["placed_at"] = t
-                    self.pending["replacements"] += 1
-                else:
-                    self.pending = None
+                self.pending = None
+            elif not self.order_book.has_pending():
+                self.pending = None
         if self.position is not None:
             self.pending = None
 
@@ -234,12 +245,8 @@ class ScalpingEnv:
                 if self.execution == "maker":
                     half = self.spread / 2.0
                     limit = price - half if side > 0 else price + half
-                    self.pending = {
-                        "side": LONG if side > 0 else SHORT,
-                        "limit": limit,
-                        "placed_at": t,
-                        "replacements": 0,
-                    }
+                    self.order_book.place(side, limit, t)
+                    self.pending = self.order_book.order
                 else:
                     self._open(LONG if side > 0 else SHORT, price)
 
@@ -251,8 +258,7 @@ class ScalpingEnv:
         if self.current_index >= self.n:
             done = True
             if self.position is not None:
-                fill = self.prices[-1] - self.slippage if self.position == LONG else self.prices[-1] + self.slippage
-                step_reward += self._close(fill)
+                step_reward += self._close(taker_exit(self._costs(), self.position, self.prices[-1]))
 
         return (
             self._observation(),

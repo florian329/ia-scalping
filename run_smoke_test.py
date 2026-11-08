@@ -20,6 +20,9 @@ from training_engine import train_model
 
 
 def main():
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     df, ann = generate_sample_data()
     print(f"Ticks generes : {len(df)} | Annotations : {len(ann)}")
 

@@ -10,17 +10,22 @@ La version initiale etait un stub vide (sleep + break). Cette version :
 """
 
 import csv
+import logging
 import os
 import time
 from collections import deque
 
 import numpy as np
 
-from backtester import ASSET_COST_MODELS, LONG, SHORT, Trade
+from backtester import LONG, SHORT, Trade
+from config import ASSET_COST_MODELS
+from execution import fees_for, taker_entry, taker_exit
 from dataset import BOOK_FEATURES, SEQ_FEATURES
 from model_pytorch import predict_action
 from money_management import money_manager_for_asset
 from pipeline_data import build_features
+
+logger = logging.getLogger(__name__)
 
 
 class TradeJournal:
@@ -181,18 +186,16 @@ class LivePaperTradingLoop:
             self._close(price, "timeout")
 
     def _fees(self, price, qty, fee_rate=None):
-        rate = self.costs.get("commission_rate", 0.0) if fee_rate is None else fee_rate
-        return self.costs.get("commission_per_qty", 0.0) * qty + rate * price * qty
+        return fees_for(self.costs, price, qty, fee_rate=fee_rate)
 
     def _close(self, fill_price, reason):
         pos = self.position
         maker_exit = self.execution == "maker" and reason == "take_profit"
         if maker_exit:
             fill = fill_price
-            fees = self._fees(fill, pos.qty, fee_rate=self.costs.get("maker_fee_rate", 0.0))
+            fees = self._fees(fill, pos.qty, fee_rate=self.costs.maker_fee_rate)
         else:
-            slip = self.costs["slippage"]
-            fill = fill_price - slip if pos.side == LONG else fill_price + slip
+            fill = taker_exit(self.costs, pos.side, fill_price)
             fees = self._fees(fill, pos.qty)
         self.capital += pos.pnl_fill(fill) - fees
         pos.exit_price = fill
@@ -206,16 +209,13 @@ class LivePaperTradingLoop:
         if self.consecutive_losses >= self.max_consecutive_losses:
             self.cooldown_until = self.tick_count + self.cooldown_ticks
             self.consecutive_losses = 0
-            print(
-                f"[protection] {self.max_consecutive_losses} pertes consecutives : "
-                f"gel des trades jusqu'au tick {self.cooldown_until}"
+            logger.warning(
+                "%d pertes consecutives : gel des trades jusqu'au tick %d",
+                self.max_consecutive_losses, self.cooldown_until,
             )
         if self.drift_monitor is not None and self.drift_monitor.record(net):
             self.cooldown_until = self.tick_count + self.cooldown_ticks
-            print(
-                f"[drift] win rate devie de la reference : "
-                f"{self.drift_monitor.status()} — gel des trades"
-            )
+            logger.warning("derive du win rate : %s — gel des trades", self.drift_monitor.status())
         if self.journal:
             self.journal.log(pos, self.capital, timestamp=self._last_timestamp())
         if self.on_trade:
@@ -257,9 +257,9 @@ class LivePaperTradingLoop:
         last_tick = self.raw_history[-1] if self.raw_history else {}
         if self.execution == "maker":
             if side == LONG:
-                limit = float(last_tick.get("best_bid", price - self.costs["spread"] / 2.0))
+                limit = float(last_tick.get("best_bid", price - self.costs.spread / 2.0))
             else:
-                limit = float(last_tick.get("best_ask", price + self.costs["spread"] / 2.0))
+                limit = float(last_tick.get("best_ask", price + self.costs.spread / 2.0))
             self.pending = {
                 "side": side,
                 "limit": limit,
@@ -267,20 +267,16 @@ class LivePaperTradingLoop:
                 "replacements": 0,
             }
             return
-        half_spread = self.costs["spread"] / 2.0
-        slip = self.costs["slippage"]
         stop_dist = self.money_manager.stop_distance(atr, self.atr_multiplier_sl)
+        entry = taker_entry(self.costs, side, price)
         atr_tp = atr * self.atr_multiplier_tp
         if self.min_tp_fee_multiple > 0:
-            taker_rate = self.costs.get("commission_rate", 0.0)
-            round_trip = 2 * taker_rate * price + half_spread + slip
+            round_trip = 2 * self.costs.commission_rate * price + self.costs.spread / 2.0 + self.costs.slippage
             atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
         if side == LONG:
-            entry = price + half_spread + slip
             stop = entry - stop_dist
             tp = entry + atr_tp
         else:
-            entry = price - half_spread - slip
             stop = entry + stop_dist
             tp = entry - atr_tp
         self.capital -= self._fees(entry, qty)
@@ -308,8 +304,8 @@ class LivePaperTradingLoop:
                 entry = order["limit"]
                 atr_tp = atr * self.atr_multiplier_tp
                 if self.min_tp_fee_multiple > 0:
-                    exit_rate = self.costs.get("maker_fee_rate", 0.0) if self.execution == "maker" else self.costs.get("commission_rate", 0.0)
-                    round_trip = (self.costs.get("maker_fee_rate", 0.0) + exit_rate) * entry
+                    exit_rate = self.costs.maker_fee_rate if self.execution == "maker" else self.costs.commission_rate
+                    round_trip = (self.costs.maker_fee_rate + exit_rate) * entry
                     atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
                 if order["side"] == LONG:
                     stop = entry - stop_dist
@@ -318,20 +314,20 @@ class LivePaperTradingLoop:
                     stop = entry + stop_dist
                     tp = entry - atr_tp
                 self.capital -= self._fees(
-                    entry, qty, fee_rate=self.costs.get("maker_fee_rate", 0.0)
+                    entry, qty, fee_rate=self.costs.maker_fee_rate
                 )
                 self.position = Trade(order["side"], t_index, entry, qty, stop, tp)
                 self.maker_fills += 1
             self.pending = None
         elif self.tick_count - order["placed_at"] >= self.maker_timeout_ticks:
             if order["replacements"] < self.maker_replacements_max:
-                step = self.costs["spread"]
+                step = self.costs.spread
                 last_tick = self.raw_history[-1] if self.raw_history else {}
                 if order["side"] == LONG:
-                    ask_ref = float(last_tick.get("best_ask", price + self.costs["spread"]))
+                    ask_ref = float(last_tick.get("best_ask", price + self.costs.spread))
                     order["limit"] = min(order["limit"] + step, ask_ref)
                 else:
-                    bid_ref = float(last_tick.get("best_bid", price - self.costs["spread"]))
+                    bid_ref = float(last_tick.get("best_bid", price - self.costs.spread))
                     order["limit"] = max(order["limit"] - step, bid_ref)
                 order["placed_at"] = self.tick_count
                 order["replacements"] += 1
@@ -374,12 +370,12 @@ class LivePaperTradingLoop:
                 if max_ticks and n >= max_ticks:
                     break
                 if self._kill_switch_triggered():
-                    print("Kill-switch declenche : arret de la boucle.")
+                    logger.warning("Kill-switch declenche : arret de la boucle.")
                     break
                 if self.poll_seconds:
                     time.sleep(self.poll_seconds)
         except KeyboardInterrupt:
-            print("Interruption manuelle.")
+            logger.info("Interruption manuelle.")
         finally:
             if self.position is not None:
                 self._close(self.raw_history[-1]["last_price"], "shutdown")

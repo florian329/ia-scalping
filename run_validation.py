@@ -26,6 +26,9 @@ from validation import (
 
 
 def main():
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Validation statistique de la strategie")
     parser.add_argument("--csv", default="market_data_sample.csv")
     parser.add_argument("--asset", default="BTC", choices=["BTC"])

@@ -29,3 +29,5 @@ jobs:
         run: python tests/test_phase4.py
       - name: Tests phase 5 (vectorisation, drift, annotations, calibration, tuning)
         run: python tests/test_phase5.py
+      - name: Golden test (non-regression numerique)
+        run: python tests/test_golden.py

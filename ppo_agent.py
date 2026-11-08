@@ -6,11 +6,15 @@ etre initialisee depuis les poids pre-entraines (ScalpingMultimodalNet), avec
 une tete valeur ajoutee pour l'actor-critic.
 """
 
+import logging
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 from model_pytorch import ScalpingMultimodalNet
+
+logger = logging.getLogger(__name__)
 
 
 class ActorCritic(nn.Module):
@@ -190,13 +194,13 @@ class PPOAgent:
             stats["capital"] = self.env.capital
             history.append(stats)
             if verbose_every and (it % verbose_every == 0 or it == 1):
-                print(
-                    f"PPO iter {it:>4d} | reward moyen={stats['mean_reward']:>8.4f} "
-                    f"| policy_loss={stats['policy_loss']:.4f} | value_loss={stats['value_loss']:.4f} "
-                    f"| entropy={stats['entropy']:.4f} | capital={self.env.capital:.2f}"
+                logger.info(
+                    "PPO iter %4d | reward moyen=%8.4f | policy_loss=%.4f | value_loss=%.4f | entropy=%.4f | capital=%.2f",
+                    it, stats["mean_reward"], stats["policy_loss"],
+                    stats["value_loss"], stats["entropy"], self.env.capital,
                 )
         return history
 
     def save(self, path="ppo_scalping_policy.pth"):
         torch.save({"policy_state_dict": self.policy.state_dict()}, path)
-        print(f"Politique PPO sauvegardee sous '{path}'")
+        logger.info("Politique PPO sauvegardee sous '%s'", path)

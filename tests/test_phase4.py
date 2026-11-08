@@ -186,7 +186,7 @@ class TestCostSensitivity(unittest.TestCase):
         self.assertGreaterEqual(rendements[0], rendements[2])
         import backtester
 
-        self.assertEqual(backtester.ASSET_COST_MODELS["BTC"]["slippage"], 0.01)
+        self.assertEqual(backtester.ASSET_COST_MODELS["BTC"].slippage, 0.01)
 
     def test_regimes(self):
         prices = np.concatenate(

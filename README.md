@@ -52,14 +52,23 @@ money management basé risque, boucle live paper trading.
 - `OandaXAUFeed` (`data_feed.py`) — XAU/USD spot interbancaire via l'API REST OANDA v20 (stdlib uniquement, clé via `OANDA_API_KEY`, environnement practice par défaut).
 - `run_live.py` — point d'entrée du paper trading : `python3 run_live.py --asset BTC --feed csv --csv market_data_sample.csv --model best_scalping_model.pth` ; charge le modèle (imitation ou PPO), applique les filtres, journalise, affiche la latence moyenne/p95/max.
 
+## Modules (phase 4 — validation statistique et protections)
+
+- `validation.py` — **walk-forward** (n fenêtres de test chronologiques), **bootstrap** (IC 95 % sur expectancy, win rate, profit factor), **sensibilité aux coûts** (slippage ×0,5 à ×3), **métriques par régime** (tendance × volatilité).
+- `run_validation.py` — validation complète en une commande : `python3 run_validation.py --csv market_data_sample.csv --model best_scalping_model.pth` ; conclut explicitement si le bord est statistiquement significatif.
+- **Protections** (backtester + boucle live) : quota de trades max (`max_trades`), **gel après N pertes consécutives** (`max_consecutive_losses` + `cooldown_ticks`), en plus du kill-switch perte journalière.
+- **Labels pondérés par PnL** (`labeling.label_ticks(pnl_weights=True)`) : un trade annoté à +3 ticks pèse plus qu'un trade à +0,5 ; support des poids par échantillon dans `dataset` et `training_engine`.
+- `MultiSegmentEnv` (`rl_environment.py`) : le PPO tourne sur plusieurs segments du train en rotation — pas de surapprentissage d'un seul scénario.
+
 ## Tests
 
 ```bash
 python3 tests/test_backtester.py    # 9 tests : backtester + money management
 python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
 python3 tests/test_phase3.py       # 5 tests : CME CSV, OANDA, boucle live de bout en bout
+python3 tests/test_phase4.py       # 14 tests : walk-forward, bootstrap, protections, labels pondérés, multi-segments
 ```
-27 tests au total, tous verts.
+41 tests au total, tous verts.
 
 ## Usage
 

@@ -35,11 +35,18 @@ def load_annotations(path):
     return ann
 
 
-def label_ticks(df, annotations, asset, window_ticks=0):
-    """Retourne df avec une colonne 'label' (0/1/2) et un masque 'is_entry_tick'."""
+def label_ticks(df, annotations, asset, window_ticks=0, pnl_weights=False):
+    """Retourne df avec une colonne 'label' (0/1/2) et un masque 'is_entry_tick'.
+
+    pnl_weights=True ajoute une colonne 'sample_weight' : les ticks etiquetes
+    sont ponderes par la magnitude du PnL du trade annote (un trade a +3 ticks
+    pese plus qu'un trade a +0.5), normalisee pour un poids moyen de 1 sur les
+    classes positives. Les ticks 'Attente' gardent un poids de 1.
+    """
     out = df.copy().reset_index(drop=True)
     out["label"] = FLAT
     out["is_entry_tick"] = False
+    out["sample_weight"] = 1.0
     if "timestamp" not in out.columns:
         raise ValueError("df doit contenir une colonne 'timestamp' (datetime, UTC)")
     ticks = pd.to_datetime(out["timestamp"], utc=True).astype("int64").to_numpy()
@@ -53,6 +60,16 @@ def label_ticks(df, annotations, asset, window_ticks=0):
         start = max(0, idx - window_ticks)
         out.loc[start:idx, "label"] = LONG if row["side"] == "BUY" else SHORT
         out.loc[idx, "is_entry_tick"] = True
+        if pnl_weights:
+            direction = 1.0 if row["side"] == "BUY" else -1.0
+            trade_pnl = direction * (float(row["exit_price"]) - float(row["entry_price"]))
+            out.loc[start:idx, "sample_weight"] = abs(trade_pnl)
+    if pnl_weights:
+        positive = out.loc[out["label"] != FLAT, "sample_weight"]
+        if len(positive) and positive.mean() > 0:
+            out.loc[out["label"] != FLAT, "sample_weight"] = (
+                positive / positive.mean()
+            )
     return out
 
 

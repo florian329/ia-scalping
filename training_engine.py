@@ -50,6 +50,7 @@ def train_model(
         class_weights = torch.tensor([1.0, 3.5, 3.5])
     class_weights = torch.as_tensor(class_weights, dtype=torch.float32).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion_no_reduction = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     checkpoint_manager = ScalpingModelCheckpoint()
     epochs_without_improvement = 0
@@ -57,13 +58,19 @@ def train_model(
     for epoch in range(1, epochs + 1):
         model.train()
         train_loss = 0.0
-        for batch_book, batch_seq, batch_targets in train_loader:
+        for batch in train_loader:
+            batch_book, batch_seq, batch_targets = batch[0], batch[1], batch[2]
             batch_book = batch_book.to(device)
             batch_seq = batch_seq.to(device)
             batch_targets = batch_targets.to(device)
             optimizer.zero_grad()
             outputs = model(batch_book, batch_seq)
-            loss = criterion(outputs, batch_targets)
+            if len(batch) >= 4:
+                sample_w = batch[3].to(device)
+                per_sample = criterion_no_reduction(outputs, batch_targets)
+                loss = (per_sample * sample_w).sum() / sample_w.sum()
+            else:
+                loss = criterion(outputs, batch_targets)
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * batch_book.size(0)

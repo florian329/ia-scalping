@@ -95,6 +95,9 @@ class LivePaperTradingLoop:
         poll_seconds=0.2,
         filters=None,
         journal_path=None,
+        max_trades=None,
+        max_consecutive_losses=3,
+        cooldown_ticks=50,
     ):
         self.model = model
         self.asset = asset
@@ -114,6 +117,12 @@ class LivePaperTradingLoop:
         self.filters = filters
         self.journal = TradeJournal(journal_path, asset=asset) if journal_path else None
         self.latency = LatencyMonitor()
+        self.max_trades = max_trades
+        self.max_consecutive_losses = max_consecutive_losses
+        self.cooldown_ticks = cooldown_ticks
+        self.consecutive_losses = 0
+        self.cooldown_until = -1
+        self.tick_count = 0
 
         self.money_manager = money_manager_for_asset(asset, risk_per_trade=0.005)
         self.costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
@@ -164,6 +173,18 @@ class LivePaperTradingLoop:
         pos.exit_price = fill
         pos.exit_reason = reason
         self.trades.append(pos)
+        net = pos.pnl_fill(fill)
+        if net < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            self.cooldown_until = self.tick_count + self.cooldown_ticks
+            self.consecutive_losses = 0
+            print(
+                f"[protection] {self.max_consecutive_losses} pertes consecutives : "
+                f"gel des trades jusqu'au tick {self.cooldown_until}"
+            )
         if self.journal:
             self.journal.log(pos, self.capital, timestamp=self._last_timestamp())
         if self.on_trade:
@@ -219,11 +240,16 @@ class LivePaperTradingLoop:
     def step(self, tick, t_index=None):
         """Traite un tick brut (dict avec last_price, last_volume, bid/ask sizes...)."""
         self.raw_history.append(tick)
+        self.tick_count += 1
         if not self._features_ready():
             return
         price = tick["last_price"]
         self._manage_position(price)
         if self.position is None and not self._kill_switch_triggered():
+            if self.tick_count < self.cooldown_until:
+                return
+            if self.max_trades is not None and len(self.trades) >= self.max_trades:
+                return
             self._maybe_open(price, t_index or len(self.raw_history))
 
     def run(self, max_ticks=None):

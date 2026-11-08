@@ -72,6 +72,9 @@ def run_backtest(
     seq_features=None,
     confidence_threshold=0.0,
     filters=None,
+    max_trades=None,
+    max_consecutive_losses=3,
+    cooldown_ticks=50,
 ):
     """Simule la strategie sur df (features calculees par pipeline_data.build_features).
 
@@ -101,14 +104,24 @@ def run_backtest(
     equity_curve = np.full(len(df), np.nan)
     equity_curve[:sequence_length] = capital
     total_fees = 0.0
+    consecutive_losses = 0
+    cooldown_until = -1
 
     def close_position(trade, exit_index, exit_price, reason):
-        nonlocal capital, position, total_fees
+        nonlocal capital, position, total_fees, consecutive_losses, cooldown_until
         slip = costs["slippage"]
         fill = exit_price - slip if trade.side == LONG else exit_price + slip
         fees = costs["commission_per_qty"] * trade.qty
-        capital += trade.pnl_fill(fill) - fees
+        net = trade.pnl_fill(fill) - fees
+        capital += net
         total_fees += fees + slip * trade.qty * money_manager.point_value
+        if net < 0:
+            consecutive_losses += 1
+            if consecutive_losses >= max_consecutive_losses:
+                cooldown_until = exit_index + cooldown_ticks
+                consecutive_losses = 0
+        else:
+            consecutive_losses = 0
         trade.exit_index = exit_index
         trade.exit_price = fill
         trade.exit_reason = reason
@@ -155,7 +168,14 @@ def run_backtest(
             if position is not None and t - position.entry_index >= max_holding_ticks:
                 close_position(position, t, price, "timeout")
 
-        if position is None:
+        if position is not None:
+            unrealized = (price - position.entry_price) * position.qty * position.direction
+            equity_curve[t] = capital + unrealized
+        else:
+            equity_curve[t] = capital
+        in_cooldown = t < cooldown_until
+        quota_reached = max_trades is not None and len(trades) >= max_trades
+        if position is None and not in_cooldown and not quota_reached:
             action, probs = predict_action(
                 model, book[t - 1], seq[t - sequence_length : t], device=device
             )
@@ -167,12 +187,6 @@ def run_backtest(
                     allowed, _ = filters.trade_allowed(side, raw_obi[t - 1], timestamps[t - 1])
                     if allowed:
                         open_position(LONG if action == 1 else SHORT, t, price)
-
-        if position is not None:
-            unrealized = (price - position.entry_price) * position.qty * position.direction
-            equity_curve[t] = capital + unrealized
-        else:
-            equity_curve[t] = capital
 
     if position is not None:
         close_position(position, len(df) - 1, prices[-1], "end_of_data")

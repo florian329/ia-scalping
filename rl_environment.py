@@ -183,3 +183,31 @@ class ScalpingEnv:
             done,
             {"capital": self.capital},
         )
+
+
+class MultiSegmentEnv:
+    """Enveloppe plusieurs ScalpingEnv (segments distincts du train).
+
+    reset() passe au segment suivant : l'agent PPO n'optimise jamais un seul
+    scenario, ce qui limite le surapprentissage du backtest. L'interface est
+    identique a ScalpingEnv (reset/step/observation_space).
+    """
+
+    def __init__(self, envs):
+        if not envs:
+            raise ValueError("MultiSegmentEnv necessite au moins un environnement")
+        self.envs = list(envs)
+        self.current = 0
+        self.observation_space = self.envs[0].observation_space
+        self.action_space = self.envs[0].action_space
+
+    @property
+    def capital(self):
+        return self.envs[self.current].capital
+
+    def reset(self):
+        self.current = (self.current + 1) % len(self.envs)
+        return self.envs[self.current].reset()
+
+    def step(self, action):
+        return self.envs[self.current].step(action)

@@ -20,10 +20,10 @@ OPTIONAL_COLUMNS = ["volume"]
 EXAMPLE_ROWS = [
     {
         "timestamp": "2026-11-08T14:05:22.104Z",
-        "asset": "NQ",
+        "asset": "BTC",
         "side": "BUY",
-        "entry_price": 19850.25,
-        "exit_price": 19854.75,
+        "entry_price": 76420.50,
+        "exit_price": 76455.00,
         "volume": 2,
     },
     {
@@ -145,7 +145,7 @@ def print_report(report):
 
 def main():
     parser = argparse.ArgumentParser(description="Validation du fichier d'annotations de trades")
-    parser.add_argument("--ann", required=True, help="Chemin du CSV d'annotations")
+    parser.add_argument("--ann", required=False, help="Chemin du CSV d'annotations")
     parser.add_argument("--market-csv", default=None, help="CSV de ticks pour verifier la couverture temporelle")
     parser.add_argument("--template", action="store_true", help="Generer un template au lieu de valider")
     parser.add_argument("--out", default="annotations_template.csv")
@@ -154,6 +154,8 @@ def main():
     if args.template:
         generate_template(args.out)
         return
+    if not args.ann:
+        parser.error("--ann est requis (ou utilisez --template pour generer un modele)")
     report = validate_annotations(args.ann, market_csv=args.market_csv)
     print_report(report)
     raise SystemExit(0 if report["valid"] else 1)

@@ -23,7 +23,7 @@ from rl_environment import ScalpingEnv
 def main():
     parser = argparse.ArgumentParser(description="Entrainement PPO pour le scalping IA")
     parser.add_argument("--csv", default="market_data_sample.csv")
-    parser.add_argument("--asset", default="BTC")
+    parser.add_argument("--asset", default="BTC", choices=["BTC"])
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--steps-per-rollout", type=int, default=512)
     parser.add_argument("--hidden-dim", type=int, default=64)
@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--out", default="ppo_scalping_policy.pth")
     parser.add_argument("--news-blackouts", default=None, help="CSV start,end (ISO) par ligne")
     parser.add_argument("--reward-scale", type=float, default=0.001, help="Normalisation du reward (stabilise la value loss)")
+    parser.add_argument("--execution", default="taker", choices=["taker", "maker"])
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -54,6 +55,7 @@ def main():
         sequence_length=args.sequence_length,
         filters=filters,
         reward_scale=args.reward_scale,
+        execution=args.execution,
     )
 
     import os

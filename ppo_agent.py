@@ -31,7 +31,7 @@ class ActorCritic(nn.Module):
         nn.init.zeros_(self.value_head.bias)
 
     def forward(self, book, seq):
-        raise NotImplementedError
+        return self.policy_logits(book, seq)
 
     def features(self, book, seq):
         out_book = self.backbone.order_book_branch(book)

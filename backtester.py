@@ -22,10 +22,13 @@ from asset_filters import AssetFilters
 FLAT, LONG, SHORT = 0, 1, -1
 
 ASSET_COST_MODELS = {
-    "BTC": {"spread": 1.0, "commission_per_qty": 0.0, "slippage": 0.5},
-    "NQ": {"spread": 0.25, "commission_per_qty": 2.5, "slippage": 0.25},
-    "ES": {"spread": 0.25, "commission_per_qty": 2.5, "slippage": 0.25},
-    "XAU": {"spread": 0.30, "commission_per_qty": 0.50, "slippage": 0.15},
+    "BTC": {
+        "spread": 0.01,
+        "slippage": 0.01,
+        "commission_per_qty": 0.0,
+        "commission_rate": 0.001,
+        "maker_fee_rate": 0.0002,
+    },
 }
 
 
@@ -65,9 +68,9 @@ def run_backtest(
     sequence_length=20,
     device="cpu",
     initial_capital=10000.0,
-    atr_multiplier_sl=1.5,
-    atr_multiplier_tp=2.0,
-    max_holding_ticks=100,
+    atr_multiplier_sl=1.69,
+    atr_multiplier_tp=2.42,
+    max_holding_ticks=36,
     norm_stats=None,
     seq_features=None,
     confidence_threshold=0.0,
@@ -77,6 +80,10 @@ def run_backtest(
     cooldown_ticks=50,
     vectorized=True,
     inference_chunk_size=4096,
+    execution="taker",
+    maker_timeout_ticks=10,
+    min_tp_fee_multiple=3.0,
+    maker_replacements_max=3,
 ):
     """Simule la strategie sur df (features calculees par pipeline_data.build_features).
 
@@ -84,11 +91,10 @@ def run_backtest(
     """
     seq_features = seq_features or SEQ_FEATURES
     costs = ASSET_COST_MODELS.get(asset, ASSET_COST_MODELS["BTC"])
+    if asset != "BTC":
+        raise ValueError("Seul le BTC est supporte par cette strategie.")
     if money_manager is None:
-        money_manager = ScalpingMoneyManager(
-            risk_per_trade=0.005,
-            point_value={"BTC": 1.0, "NQ": 20.0, "ES": 50.0, "XAU": 100.0}.get(asset, 1.0),
-        )
+        money_manager = ScalpingMoneyManager(risk_per_trade=0.005, point_value=1.0)
 
     book = df[BOOK_FEATURES].to_numpy(dtype=np.float32)
     if norm_stats is not None:
@@ -115,14 +121,41 @@ def run_backtest(
             model, book, seq, sequence_length, device, inference_chunk_size
         )
 
+    def _fees_for(price, qty, fee_rate=None):
+        rate = costs.get("commission_rate", 0.0) if fee_rate is None else fee_rate
+        return (
+            costs.get("commission_per_qty", 0.0) * qty
+            + rate * price * qty
+        )
+
+    def _tp_distance(entry, atr_value, entry_fee_rate, exit_fee_rate, taker_entry):
+        """TP = max(multiple ATR, plancher k x couts aller-retour).
+
+        Sans plancher, un TP serre peut etre plus petit que les frais : chaque
+        trade gagnant remplit le courtier, pas le compte."""
+        atr_dist = atr_value * atr_multiplier_sl * (atr_multiplier_tp / atr_multiplier_sl)
+        if min_tp_fee_multiple <= 0:
+            return atr_dist
+        entry_cost = (costs["spread"] / 2.0 + costs["slippage"]) if taker_entry else 0.0
+        fees_price = (entry_fee_rate + exit_fee_rate) * entry
+        round_trip = fees_price + entry_cost
+        return max(atr_dist, min_tp_fee_multiple * round_trip)
+
     def close_position(trade, exit_index, exit_price, reason):
         nonlocal capital, position, total_fees, consecutive_losses, cooldown_until
-        slip = costs["slippage"]
-        fill = exit_price - slip if trade.side == LONG else exit_price + slip
-        fees = costs["commission_per_qty"] * trade.qty
+        maker_exit = execution == "maker" and reason == "take_profit"
+        if maker_exit:
+            fill = exit_price
+            fees = _fees_for(fill, trade.qty, fee_rate=costs.get("maker_fee_rate", 0.0))
+            slip_cost = 0.0
+        else:
+            slip = costs["slippage"]
+            fill = exit_price - slip if trade.side == LONG else exit_price + slip
+            fees = _fees_for(fill, trade.qty)
+            slip_cost = slip * trade.qty * money_manager.point_value
         net = trade.pnl_fill(fill) - fees
         capital += net
-        total_fees += fees + slip * trade.qty * money_manager.point_value
+        total_fees += fees + slip_cost
         if net < 0:
             consecutive_losses += 1
             if consecutive_losses >= max_consecutive_losses:
@@ -136,29 +169,52 @@ def run_backtest(
         trades.append(trade)
         position = None
 
-    def open_position(side, t, action_price):
+    def open_position(side, t, action_price, entry_override=None, fee_rate=None):
         nonlocal capital, position, total_fees
-        qty = money_manager.calculate_position_size(capital, atr[t - 1])
+        qty = money_manager.calculate_position_size(
+            capital, atr[t - 1], price=entry_override if entry_override is not None else action_price
+        )
         if qty <= 0:
             return
         half_spread = costs["spread"] / 2.0
         slip = costs["slippage"]
-        if side == LONG:
+        if entry_override is not None:
+            entry = entry_override
+        elif side == LONG:
             entry = action_price + half_spread + slip
-            stop = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry + money_manager.stop_distance(atr[t - 1], atr_multiplier_sl) * (
-                atr_multiplier_tp / atr_multiplier_sl
-            )
         else:
             entry = action_price - half_spread - slip
+        entry_fee_rate = (
+            costs.get("commission_rate", 0.0)
+            if fee_rate is None
+            else fee_rate
+        )
+        exit_fee_rate = (
+            costs.get("maker_fee_rate", 0.0)
+            if execution == "maker"
+            else costs.get("commission_rate", 0.0)
+        )
+        taker_entry = fee_rate is None
+        tp_dist = _tp_distance(
+            entry, atr[t - 1], entry_fee_rate, exit_fee_rate, taker_entry
+        )
+        if side == LONG:
+            stop = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
+            tp = entry + tp_dist
+        else:
             stop = entry + money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl) * (
-                atr_multiplier_tp / atr_multiplier_sl
-            )
-        fees = costs["commission_per_qty"] * qty
+            tp = entry - tp_dist
+        fees = _fees_for(entry, qty, fee_rate=fee_rate)
         capital -= fees
         total_fees += fees
         position = Trade(side, t, entry, qty, stop, tp)
+
+    best_bid = df["best_bid"].to_numpy(dtype=np.float64) if "best_bid" in df else None
+    best_ask = df["best_ask"].to_numpy(dtype=np.float64) if "best_ask" in df else None
+    pending = None
+    maker_fills = 0
+    maker_cancels = 0
+    maker_replacements = 0
 
     for t in range(sequence_length, len(df)):
         price = prices[t]
@@ -181,9 +237,46 @@ def run_backtest(
             equity_curve[t] = capital + unrealized
         else:
             equity_curve[t] = capital
+        if pending is not None:
+            if position is not None:
+                pending = None
+                maker_cancels += 1
+            else:
+                filled = False
+                if pending["side"] == LONG and price <= pending["limit"]:
+                    filled = True
+                elif pending["side"] == SHORT and price >= pending["limit"]:
+                    filled = True
+                elif t - pending["placed_at"] >= maker_timeout_ticks:
+                    if pending["replacements"] < maker_replacements_max:
+                        step = costs["spread"]
+                        if pending["side"] == LONG:
+                            ask_ref = best_ask[t] if best_ask is not None else price + costs["spread"] / 2.0
+                            pending["limit"] = min(pending["limit"] + step, ask_ref)
+                        else:
+                            bid_ref = best_bid[t] if best_bid is not None else price - costs["spread"] / 2.0
+                            pending["limit"] = max(pending["limit"] - step, bid_ref)
+                        pending["placed_at"] = t
+                        pending["replacements"] += 1
+                        maker_replacements += 1
+                    else:
+                        pending = None
+                        maker_cancels += 1
+                if filled:
+                    open_position(
+                        pending["side"],
+                        t,
+                        price,
+                        entry_override=pending["limit"],
+                        fee_rate=costs.get("maker_fee_rate", 0.0),
+                    )
+                    if position is not None:
+                        maker_fills += 1
+                    pending = None
+
         in_cooldown = t < cooldown_until
         quota_reached = max_trades is not None and len(trades) >= max_trades
-        if position is None and not in_cooldown and not quota_reached:
+        if position is None and pending is None and not in_cooldown and not quota_reached:
             if actions_cache is not None:
                 k = t - sequence_length
                 action = int(actions_cache[k])
@@ -193,18 +286,34 @@ def run_backtest(
                     model, book[t - 1], seq[t - sequence_length : t], device=device
                 )
             if probs[action] >= confidence_threshold and action in (1, 2):
-                if filters is None:
-                    open_position(LONG if action == 1 else SHORT, t, price)
-                else:
-                    side = 1 if action == 1 else -1
+                side = 1 if action == 1 else -1
+                allowed = True
+                if filters is not None:
                     allowed, _ = filters.trade_allowed(side, raw_obi[t - 1], timestamps[t - 1])
-                    if allowed:
-                        open_position(LONG if action == 1 else SHORT, t, price)
+                if allowed:
+                    if execution == "maker":
+                        if side > 0:
+                            limit = best_bid[t] if best_bid is not None else price - costs["spread"] / 2.0
+                        else:
+                            limit = best_ask[t] if best_ask is not None else price + costs["spread"] / 2.0
+                        pending = {
+                            "side": LONG if side > 0 else SHORT,
+                            "limit": float(limit),
+                            "placed_at": t,
+                            "replacements": 0,
+                        }
+                    else:
+                        open_position(LONG if side > 0 else SHORT, t, price)
 
     if position is not None:
         close_position(position, len(df) - 1, prices[-1], "end_of_data")
 
-    return _build_report(trades, equity_curve, initial_capital, total_fees)
+    report = _build_report(trades, equity_curve, initial_capital, total_fees)
+    report["execution"] = execution
+    report["maker_fills"] = maker_fills
+    report["maker_cancels"] = maker_cancels
+    report["maker_replacements"] = maker_replacements
+    return report
 
 
 def _batch_predict(model, book, seq, sequence_length, device, chunk_size=4096):

@@ -18,7 +18,8 @@ import pandas as pd
 import torch
 
 from asset_filters import filters_for_asset
-from data_feed import CMECSVFeed, CSVReplayFeed, CCXTFeed, ListFeed, OandaXAUFeed
+from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM
+from data_feed import CSVReplayFeed, CCXTFeed
 from live_paper_trading import LivePaperTradingLoop
 from model_pytorch import ScalpingMultimodalNet
 from pipeline_data import build_features
@@ -42,10 +43,6 @@ def make_feed(args):
         return CSVReplayFeed(args.csv)
     if args.feed == "ccxt":
         return CCXTFeed(exchange_id=args.exchange, symbol=args.symbol, sandbox=True)
-    if args.feed == "cme":
-        return CMECSVFeed(args.csv, contract=args.asset)
-    if args.feed == "oanda":
-        return OandaXAUFeed()
     raise ValueError(f"Feed inconnu : {args.feed}")
 
 
@@ -53,16 +50,14 @@ def load_norm_stats(df_path):
     df = pd.read_csv(df_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     feats = build_features(df)
-    from dataset import BOOK_FEATURES, ORDER_BOOK_DIM, SEQUENCE_DIM
-
     book = feats[BOOK_FEATURES].to_numpy(dtype=np.float32)
     return book.mean(axis=0), book.std(axis=0)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Live paper trading IA scalping")
-    parser.add_argument("--asset", default="BTC", choices=["BTC", "NQ", "ES", "XAU"])
-    parser.add_argument("--feed", default="csv", choices=["csv", "ccxt", "cme", "oanda"])
+    parser.add_argument("--asset", default="BTC", choices=["BTC"])
+    parser.add_argument("--feed", default="csv", choices=["csv", "ccxt"])
     parser.add_argument("--csv", default="market_data_sample.csv")
     parser.add_argument("--exchange", default="binance")
     parser.add_argument("--symbol", default="BTC/USDT")
@@ -71,6 +66,7 @@ def main():
     parser.add_argument("--capital", type=float, default=10000.0)
     parser.add_argument("--max-ticks", type=int, default=None)
     parser.add_argument("--confidence", type=float, default=0.5)
+    parser.add_argument("--execution", default="taker", choices=["taker", "maker"])
     parser.add_argument("--journal", default="trades_journal.csv")
     parser.add_argument("--news-blackouts", default=None, help="CSV start,end (ISO) par ligne")
     args = parser.parse_args()
@@ -92,7 +88,7 @@ def main():
                     news_blackouts.append((pd.to_datetime(s, utc=True), pd.to_datetime(e, utc=True)))
 
     filters = filters_for_asset(args.asset, news_blackouts=news_blackouts)
-    norm_stats = load_norm_stats(args.norm_csv or args.csv) if args.feed in ("csv", "cme") else None
+    norm_stats = load_norm_stats(args.norm_csv or args.csv) if args.feed == "csv" else None
 
     loop = LivePaperTradingLoop(
         model,
@@ -103,8 +99,9 @@ def main():
         confidence_threshold=args.confidence,
         norm_stats=norm_stats,
         filters=filters,
+        execution=args.execution,
         journal_path=args.journal,
-        poll_seconds=0.0 if args.feed in ("csv", "cme") else 0.2,
+        poll_seconds=0.0 if args.feed == "csv" else 0.2,
     )
     result = loop.run(max_ticks=args.max_ticks)
 
@@ -115,6 +112,7 @@ def main():
     if "reconnect_count" in result:
         print(f"Reconnexions feed  : {result['reconnect_count']}")
     print(f"Journal des trades : {args.journal}")
+    print(f"Execution           : {result.get('execution')} | fills maker={result.get('maker_fills')} | annulations={result.get('maker_cancels')}")
 
 
 if __name__ == "__main__":

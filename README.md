@@ -1,6 +1,6 @@
 # IA Scalping Multimodal — version corrigée
 
-Pipeline complet de scalping IA (BTC, NQ, ES, XAU) : carnet d'ordres + price action,
+Pipeline complet de scalping IA **BTC** : carnet d'ordres + price action,
 modèle hybride MLP + LSTM, apprentissage par imitation, backtester réaliste,
 money management basé risque, boucle live paper trading.
 
@@ -17,7 +17,7 @@ money management basé risque, boucle live paper trading.
 | Split aléatoire impossible à contrôler | `dataset.py` : split strictement chronologique 70/15/15 |
 | `BatchNorm1d` dangereux en prod (batch=1) | `LayerNorm` sur la branche carnet |
 | Poids de classes arbitraires [1, 3.5, 3.5] | Poids calculés depuis la distribution réelle (racine inv. fréq., plafonnés) |
-| Money manager sans valeur du point | NQ=20 $/pt, ES=50 $/pt, XAU=100 $/lot, plafond qty, stop min |
+| Money manager sans plafond de notionnel | Plafond `capital x max_leverage / prix`, frais en % du notionnel, stop min |
 | Live trading = stub vide | `live_paper_trading.py` : feed injectable, TP/SL, kill-switch, latence |
 | Features promises absentes (VWAP, ATR, spread, momentum 10/30/60) | Toutes implémentées dans `pipeline_data.py` |
 
@@ -37,7 +37,7 @@ money management basé risque, boucle live paper trading.
 
 ## Modules (phase 2 — améliorations)
 
-- `asset_filters.py` — filtres par actif de la spec : OBI > 0.85 pour ES, blackout news pour XAU (fenêtres configurables), anti-spoofing BTC (profondeur carnet plafonnée à 10 niveaux). Intégrés au backtester et à la boucle live.
+- `asset_filters.py` — filtres d'exécution BTC : anti-spoofing (profondeur carnet plafonnée à 10 niveaux, spec PDF §5.1), seuil d'OBI optionnel et blackout de news configurable. Intégrés au backtester et à la boucle live.
 - `rl_environment.py` — environnement RL (interface reset/step type Gym, sans dépendance) : TP/SL ATR, coûts, pénalité de temps de rétention et de drawdown conformes à la fonction de reward de la spec.
 - `ppo_agent.py` — PPO compact en PyTorch pur (clip surrogate, GAE, entropy bonus), politique initialisable depuis les poids d'imitation.
 - `train_ppo.py` — script de la phase 2 : `python3 train_ppo.py --csv market_data_sample.csv --iterations 50`.
@@ -45,11 +45,10 @@ money management basé risque, boucle live paper trading.
 - `live_paper_trading.py` (durci) — journalisation CSV des trades (`TradeJournal`), statistiques de latence moyenne/p95/max (`LatencyMonitor`), filtres par actif, support des feeds avec reconnexion.
 - `tests/test_improvements.py` — 13 tests supplémentaires (22 au total).
 
-## Modules (phase 3 — connecteurs et mise en production)
+## Modules (phase 3 — connecteurs et mise en production, BTC uniquement)
 
-- `CMECSVFeed` (`data_feed.py`) — ticks NQ/ES au format CSV FirstRateData (DateTime,Price,Volume) ; carnet synthétisé (le flux L2 CME réel nécessite IBKRFeed ou MDP3).
-- `IBKRFeed` (`data_feed.py`) — profondeur L2 CME via TWS/IB Gateway (`pip install ib_insync`, import paresseux).
-- `OandaXAUFeed` (`data_feed.py`) — XAU/USD spot interbancaire via l'API REST OANDA v20 (stdlib uniquement, clé via `OANDA_API_KEY`, environnement practice par défaut).
+La stratégie est **exclusivement BTC** : tout autre actif est rejeté explicitement (ValueError) au niveau des filtres, du money manager, du backtester, de l'environnement RL et de la boucle live.
+
 - `run_live.py` — point d'entrée du paper trading : `python3 run_live.py --asset BTC --feed csv --csv market_data_sample.csv --model best_scalping_model.pth` ; charge le modèle (imitation ou PPO), applique les filtres, journalise, affiche la latence moyenne/p95/max.
 
 ## Modules (phase 4 — validation statistique et protections)
@@ -70,12 +69,47 @@ money management basé risque, boucle live paper trading.
 - **Tuning** (`tune_hyperparameters.py`) : recherche d'hyperparamètres d'exécution (SL/TP ATR, timeout, seuil, fenêtre) avec Optuna si disponible, sinon recherche aléatoire — objectif = **expectancy out-of-sample**, pas la loss.
 - **CI** (`.github/workflows/tests.yml`) : les 57 tests tournent à chaque push/PR ; `requirements.txt` verrouille les dépendances.
 
+## Mode d'exécution maker (`backtester.py`, `rl_environment.py`)
+
+`run_backtest(..., execution="maker")` place des ordres limites au carnet au lieu
+d'ordres au marché :
+
+- **Entrée** : limite au best bid (long) / best ask (short) — remplie uniquement
+  si le prix traverse le niveau (adverse selection modélisée), sinon annulée
+  après `maker_timeout_ticks`. Frais maker (0,02 %, type futures) au lieu de
+  taker (0,1 %).
+- **Sortie TP** : limite à cours atteint — frais maker, pas de slippage.
+- **Sortie stop/timeout** : au marché — frais taker + slippage (réaliste : un
+  stop est toujours prémium).
+- Le rapport inclut `maker_fills` / `maker_cancels` pour mesurer le taux de
+  remplissage.
+- Disponible partout : backtester, environnement RL, boucle live
+  (`run_live.py --execution maker`) et entraînement (`train_ppo.py --execution maker`).
+
+Sur l'échantillon BTC réel (toujours-long naïf, 3 min) : taker = −1,88 %
+(198 $ de frais, IC 95 % entièrement négatif) vs maker = −0,58 % (68 $ de
+frais, **IC 95 % chevauchant 0**) — le maker divise les frais par 3 et rapproche
+structurellement la stratégie de la viabilité.
+
+## Plancher de TP et queue chasing (phase 6)
+
+- **Plancher de TP = k × frais aller-retour** (`min_tp_fee_multiple=3.0`) : la distance du
+  take-profit ne peut pas être inférieure à 3 × les coûts aller-retour en points de prix.
+  Sans ce plancher, un TP serré remplit le courtier, pas le compte : chaque trade gagnant
+  doit payer plusieurs trades perdants. Effet mesuré sur données réelles : win rate 79 % → 20 %
+  mais **profit factor 1,52 → 34** et expectancy/trade 0 → **+0,29 $**.
+- **Queue chasing** (`maker_replacements_max=3`) : un ordre limite non rempli est re-placé
+  un tick plus près du mid à chaque timeout (jusqu'à 3 fois) au lieu d'être abandonné —
+  taux de remplissage en hausse, mesuré via `maker_replacements` dans le rapport.
+- **Hyperparamètres tunés par défaut** : SL 1,69×ATR, TP 2,42×ATR, timeout 36 ticks
+  (issus du tuning out-of-sample sur données réelles).
+- Disponible partout : backtester, environnement RL, boucle live.
+
 ## Tests
 
 ```bash
 python3 tests/test_backtester.py    # 9 tests : backtester + money management
 python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journal
-python3 tests/test_phase3.py       # 5 tests : CME CSV, OANDA, boucle live de bout en bout
 python3 tests/test_phase4.py       # 14 tests : walk-forward, bootstrap, protections, labels pondérés, multi-segments
 python3 tests/test_phase5.py       # 16 tests : vectorisation, drift, annotations, calibration, tuning, nouvelles features
 ```
@@ -91,8 +125,6 @@ python3 run_smoke_test.py         # pipeline complet sur donnees synthetiques
 
 ## Avertissements connus
 
-- `CMECSVFeed` synthétise la profondeur du carnet (FirstRateData ne fournit pas le L2) :
-  pour de l'order flow CME réel en profondeur, utiliser `IBKRFeed`.
 - La phase PPO est validée mécaniquement (27 tests verts, entraînement stable avec
   `reward_scale`) mais n'a été démontrée que sur données synthétiques.
 - Le smoke test produit un résultat négatif : c'est attendu. Les données sont un random

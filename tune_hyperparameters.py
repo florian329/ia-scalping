@@ -30,10 +30,10 @@ SEARCH_SPACE = {
 }
 
 DEFAULTS = {
-    "atr_multiplier_sl": 1.5,
-    "atr_multiplier_tp": 2.0,
-    "max_holding_ticks": 100,
-    "confidence_threshold": 0.4,
+    "atr_multiplier_sl": 1.69,
+    "atr_multiplier_tp": 2.42,
+    "max_holding_ticks": 36,
+    "confidence_threshold": 0.35,
     "sequence_length": 20,
 }
 
@@ -116,7 +116,7 @@ def optuna_search(model, df, n_trials=20, seed=42, norm_stats=None, filters=None
 def main():
     parser = argparse.ArgumentParser(description="Tuning des hyperparametres d'execution")
     parser.add_argument("--csv", default="market_data_sample.csv")
-    parser.add_argument("--asset", default="BTC")
+    parser.add_argument("--asset", default="BTC", choices=["BTC"])
     parser.add_argument("--model", default="best_scalping_model.pth")
     parser.add_argument("--trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)

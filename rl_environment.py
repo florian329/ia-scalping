@@ -23,8 +23,8 @@ class ScalpingEnv:
         sequence_length=20,
         initial_capital=10000.0,
         risk_per_trade=0.005,
-        atr_multiplier_sl=1.5,
-        atr_multiplier_tp=2.0,
+        atr_multiplier_sl=1.69,
+        atr_multiplier_tp=2.42,
         spread=1.0,
         commission_per_qty=0.0,
         commission_rate=0.0,
@@ -39,6 +39,8 @@ class ScalpingEnv:
         execution="taker",
         maker_fee_rate=0.0002,
         maker_timeout_ticks=10,
+        min_tp_fee_multiple=3.0,
+        maker_replacements_max=3,
     ):
         if asset != "BTC":
             raise ValueError("Seul le BTC est supporte par cette strategie.")
@@ -62,6 +64,8 @@ class ScalpingEnv:
         self.execution = execution
         self.maker_fee_rate = maker_fee_rate
         self.maker_timeout_ticks = maker_timeout_ticks
+        self.min_tp_fee_multiple = min_tp_fee_multiple
+        self.maker_replacements_max = maker_replacements_max
         self.pending = None
 
         book = df[BOOK_FEATURES].to_numpy(dtype=np.float32)
@@ -135,16 +139,20 @@ class ScalpingEnv:
             self.entry_price = price + half + self.slippage
         else:
             self.entry_price = price - half - self.slippage
+        atr_value = self.atr[self.current_index - 1]
+        atr_tp = atr_value * self.atr_multiplier_tp
+        if self.min_tp_fee_multiple > 0:
+            entry_fee_rate = self.maker_fee_rate if fee_rate is not None else self.commission_rate
+            exit_fee_rate = self.maker_fee_rate if self.execution == "maker" else self.commission_rate
+            entry_cost = 0.0 if fee_rate is not None else self.spread / 2.0 + self.slippage
+            round_trip = (entry_fee_rate + exit_fee_rate) * self.entry_price + entry_cost
+            atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
         if side == LONG:
-            self.stop_price = self.entry_price - self.atr[self.current_index - 1] * self.atr_multiplier_sl
-            self.tp_price = self.entry_price + self.atr[self.current_index - 1] * self.atr_multiplier_sl * (
-                self.atr_multiplier_tp / self.atr_multiplier_sl
-            )
+            self.stop_price = self.entry_price - atr_value * self.atr_multiplier_sl
+            self.tp_price = self.entry_price + atr_tp
         else:
-            self.stop_price = self.entry_price + self.atr[self.current_index - 1] * self.atr_multiplier_sl
-            self.tp_price = self.entry_price - self.atr[self.current_index - 1] * self.atr_multiplier_sl * (
-                self.atr_multiplier_tp / self.atr_multiplier_sl
-            )
+            self.stop_price = self.entry_price + atr_value * self.atr_multiplier_sl
+            self.tp_price = self.entry_price - atr_tp
         self.position = side
         self.entry_tick = self.current_index
         self.capital -= self._fees(self.entry_price, self.qty, fee_rate=fee_rate)
@@ -202,7 +210,16 @@ class ScalpingEnv:
                     fee_rate=self.maker_fee_rate,
                 )
             elif t - self.pending["placed_at"] >= self.maker_timeout_ticks:
-                self.pending = None
+                if self.pending["replacements"] < self.maker_replacements_max:
+                    step = self.spread
+                    if self.pending["side"] == LONG:
+                        self.pending["limit"] = self.pending["limit"] + step
+                    else:
+                        self.pending["limit"] = self.pending["limit"] - step
+                    self.pending["placed_at"] = t
+                    self.pending["replacements"] += 1
+                else:
+                    self.pending = None
         if self.position is not None:
             self.pending = None
 
@@ -221,6 +238,7 @@ class ScalpingEnv:
                         "side": LONG if side > 0 else SHORT,
                         "limit": limit,
                         "placed_at": t,
+                        "replacements": 0,
                     }
                 else:
                     self._open(LONG if side > 0 else SHORT, price)

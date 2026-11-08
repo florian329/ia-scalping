@@ -311,5 +311,72 @@ class TestMakerLiveLoop(unittest.TestCase):
         self.assertIn("maker_cancels", result)
         self.assertGreater(result["maker_fills"] + result["maker_cancels"], 0)
 
+class TestTpFeeFloor(unittest.TestCase):
+    def test_tp_couvre_au_moins_k_fois_les_frais(self):
+        base = 76000.0 + 0.5 * ((-1) ** np.arange(80))
+        prices = np.concatenate([base, 76000.0 + np.arange(1, 150) * 20.0])
+        df = make_df(prices)
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=1000,
+            execution="maker", min_tp_fee_multiple=3.0,
+        )
+        self.assertGreater(report["n_trades"], 0)
+        entry_fee = 0.0002
+        exit_fee = 0.0002
+        for tr in report["trades"]:
+            if tr.exit_reason == "take_profit":
+                tp_distance = tr.tp_price - tr.entry_price
+                round_trip = (entry_fee + exit_fee) * tr.entry_price
+                self.assertGreaterEqual(tp_distance, 3.0 * round_trip * 0.999)
+
+    def test_plancher_desactive(self):
+        base = 76000.0 + 0.5 * ((-1) ** np.arange(80))
+        prices = np.concatenate([base, 76000.0 + np.arange(1, 150) * 20.0])
+        df = make_df(prices)
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=1000,
+            execution="maker", min_tp_fee_multiple=0.0,
+        )
+        self.assertGreater(report["n_trades"], 0)
+        atr_tp = df["ATR_Tick"].mean() * 2.42
+        for tr in report["trades"]:
+            if tr.exit_reason == "take_profit":
+                self.assertLess(tr.tp_price - tr.entry_price, atr_tp * 3)
+
+
+class TestMakerReplacements(unittest.TestCase):
+    def _prix_avec_dips(self):
+        return np.concatenate([
+            np.full(40, 76000.0),
+            [75999.8],
+            np.full(5, 76000.0),
+            [75999.5],
+            76000.0 + np.arange(1, 60) * 3.0,
+        ])
+
+    def test_replacement_provoque_le_remplissage(self):
+        df = make_df(self._prix_avec_dips())
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=1000,
+            execution="maker", maker_timeout_ticks=10,
+            maker_replacements_max=3, min_tp_fee_multiple=0.0,
+        )
+        self.assertGreater(report["maker_replacements"], 0)
+        self.assertGreater(report["maker_fills"], 0)
+        self.assertGreater(report["n_trades"], 0)
+
+    def test_sans_replacement_pas_de_remplissage(self):
+        df = make_df(self._prix_avec_dips())
+        report = run_backtest(
+            ConstantModel(1), df, asset="BTC", max_holding_ticks=1000,
+            execution="maker", maker_timeout_ticks=10,
+            maker_replacements_max=0, min_tp_fee_multiple=0.0,
+        )
+        self.assertEqual(report["maker_replacements"], 0)
+        self.assertEqual(report["maker_fills"], 0)
+        self.assertEqual(report["n_trades"], 0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,10 +30,10 @@ SEARCH_SPACE = {
 }
 
 DEFAULTS = {
-    "atr_multiplier_sl": 1.5,
-    "atr_multiplier_tp": 2.0,
-    "max_holding_ticks": 100,
-    "confidence_threshold": 0.4,
+    "atr_multiplier_sl": 1.69,
+    "atr_multiplier_tp": 2.42,
+    "max_holding_ticks": 36,
+    "confidence_threshold": 0.35,
     "sequence_length": 20,
 }
 

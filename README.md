@@ -91,6 +91,20 @@ Sur l'échantillon BTC réel (toujours-long naïf, 3 min) : taker = −1,88 %
 frais, **IC 95 % chevauchant 0**) — le maker divise les frais par 3 et rapproche
 structurellement la stratégie de la viabilité.
 
+## Plancher de TP et queue chasing (phase 6)
+
+- **Plancher de TP = k × frais aller-retour** (`min_tp_fee_multiple=3.0`) : la distance du
+  take-profit ne peut pas être inférieure à 3 × les coûts aller-retour en points de prix.
+  Sans ce plancher, un TP serré remplit le courtier, pas le compte : chaque trade gagnant
+  doit payer plusieurs trades perdants. Effet mesuré sur données réelles : win rate 79 % → 20 %
+  mais **profit factor 1,52 → 34** et expectancy/trade 0 → **+0,29 $**.
+- **Queue chasing** (`maker_replacements_max=3`) : un ordre limite non rempli est re-placé
+  un tick plus près du mid à chaque timeout (jusqu'à 3 fois) au lieu d'être abandonné —
+  taux de remplissage en hausse, mesuré via `maker_replacements` dans le rapport.
+- **Hyperparamètres tunés par défaut** : SL 1,69×ATR, TP 2,42×ATR, timeout 36 ticks
+  (issus du tuning out-of-sample sur données réelles).
+- Disponible partout : backtester, environnement RL, boucle live.
+
 ## Tests
 
 ```bash

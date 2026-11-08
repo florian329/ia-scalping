@@ -68,9 +68,9 @@ def run_backtest(
     sequence_length=20,
     device="cpu",
     initial_capital=10000.0,
-    atr_multiplier_sl=1.5,
-    atr_multiplier_tp=2.0,
-    max_holding_ticks=100,
+    atr_multiplier_sl=1.69,
+    atr_multiplier_tp=2.42,
+    max_holding_ticks=36,
     norm_stats=None,
     seq_features=None,
     confidence_threshold=0.0,
@@ -82,6 +82,8 @@ def run_backtest(
     inference_chunk_size=4096,
     execution="taker",
     maker_timeout_ticks=10,
+    min_tp_fee_multiple=3.0,
+    maker_replacements_max=3,
 ):
     """Simule la strategie sur df (features calculees par pipeline_data.build_features).
 
@@ -126,6 +128,19 @@ def run_backtest(
             + rate * price * qty
         )
 
+    def _tp_distance(entry, atr_value, entry_fee_rate, exit_fee_rate, taker_entry):
+        """TP = max(multiple ATR, plancher k x couts aller-retour).
+
+        Sans plancher, un TP serre peut etre plus petit que les frais : chaque
+        trade gagnant remplit le courtier, pas le compte."""
+        atr_dist = atr_value * atr_multiplier_sl * (atr_multiplier_tp / atr_multiplier_sl)
+        if min_tp_fee_multiple <= 0:
+            return atr_dist
+        entry_cost = (costs["spread"] / 2.0 + costs["slippage"]) if taker_entry else 0.0
+        fees_price = (entry_fee_rate + exit_fee_rate) * entry
+        round_trip = fees_price + entry_cost
+        return max(atr_dist, min_tp_fee_multiple * round_trip)
+
     def close_position(trade, exit_index, exit_price, reason):
         nonlocal capital, position, total_fees, consecutive_losses, cooldown_until
         maker_exit = execution == "maker" and reason == "take_profit"
@@ -169,16 +184,26 @@ def run_backtest(
             entry = action_price + half_spread + slip
         else:
             entry = action_price - half_spread - slip
+        entry_fee_rate = (
+            costs.get("commission_rate", 0.0)
+            if fee_rate is None
+            else fee_rate
+        )
+        exit_fee_rate = (
+            costs.get("maker_fee_rate", 0.0)
+            if execution == "maker"
+            else costs.get("commission_rate", 0.0)
+        )
+        taker_entry = fee_rate is None
+        tp_dist = _tp_distance(
+            entry, atr[t - 1], entry_fee_rate, exit_fee_rate, taker_entry
+        )
         if side == LONG:
             stop = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry + money_manager.stop_distance(atr[t - 1], atr_multiplier_sl) * (
-                atr_multiplier_tp / atr_multiplier_sl
-            )
+            tp = entry + tp_dist
         else:
             stop = entry + money_manager.stop_distance(atr[t - 1], atr_multiplier_sl)
-            tp = entry - money_manager.stop_distance(atr[t - 1], atr_multiplier_sl) * (
-                atr_multiplier_tp / atr_multiplier_sl
-            )
+            tp = entry - tp_dist
         fees = _fees_for(entry, qty, fee_rate=fee_rate)
         capital -= fees
         total_fees += fees
@@ -189,6 +214,7 @@ def run_backtest(
     pending = None
     maker_fills = 0
     maker_cancels = 0
+    maker_replacements = 0
 
     for t in range(sequence_length, len(df)):
         price = prices[t]
@@ -222,8 +248,20 @@ def run_backtest(
                 elif pending["side"] == SHORT and price >= pending["limit"]:
                     filled = True
                 elif t - pending["placed_at"] >= maker_timeout_ticks:
-                    pending = None
-                    maker_cancels += 1
+                    if pending["replacements"] < maker_replacements_max:
+                        step = costs["spread"]
+                        if pending["side"] == LONG:
+                            ask_ref = best_ask[t] if best_ask is not None else price + costs["spread"] / 2.0
+                            pending["limit"] = min(pending["limit"] + step, ask_ref)
+                        else:
+                            bid_ref = best_bid[t] if best_bid is not None else price - costs["spread"] / 2.0
+                            pending["limit"] = max(pending["limit"] - step, bid_ref)
+                        pending["placed_at"] = t
+                        pending["replacements"] += 1
+                        maker_replacements += 1
+                    else:
+                        pending = None
+                        maker_cancels += 1
                 if filled:
                     open_position(
                         pending["side"],
@@ -262,6 +300,7 @@ def run_backtest(
                             "side": LONG if side > 0 else SHORT,
                             "limit": float(limit),
                             "placed_at": t,
+                            "replacements": 0,
                         }
                     else:
                         open_position(LONG if side > 0 else SHORT, t, price)
@@ -273,6 +312,7 @@ def run_backtest(
     report["execution"] = execution
     report["maker_fills"] = maker_fills
     report["maker_cancels"] = maker_cancels
+    report["maker_replacements"] = maker_replacements
     return report
 
 

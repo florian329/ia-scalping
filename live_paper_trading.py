@@ -85,9 +85,9 @@ class LivePaperTradingLoop:
         device="cpu",
         initial_capital=10000.0,
         sequence_length=20,
-        atr_multiplier_sl=1.5,
-        atr_multiplier_tp=2.0,
-        max_holding_ticks=100,
+        atr_multiplier_sl=1.69,
+        atr_multiplier_tp=2.42,
+        max_holding_ticks=36,
         max_daily_loss_pct=2.0,
         confidence_threshold=0.5,
         norm_stats=None,
@@ -101,6 +101,8 @@ class LivePaperTradingLoop:
         drift_monitor=None,
         execution="taker",
         maker_timeout_ticks=10,
+        min_tp_fee_multiple=3.0,
+        maker_replacements_max=3,
     ):
         self.model = model
         self.asset = asset
@@ -129,9 +131,12 @@ class LivePaperTradingLoop:
         self.drift_monitor = drift_monitor
         self.execution = execution
         self.maker_timeout_ticks = maker_timeout_ticks
+        self.min_tp_fee_multiple = min_tp_fee_multiple
+        self.maker_replacements_max = maker_replacements_max
         self.pending = None
         self.maker_fills = 0
         self.maker_cancels = 0
+        self.maker_replacements = 0
 
         if asset != "BTC":
             raise ValueError("Seul le BTC est supporte par cette strategie.")
@@ -255,19 +260,29 @@ class LivePaperTradingLoop:
                 limit = float(last_tick.get("best_bid", price - self.costs["spread"] / 2.0))
             else:
                 limit = float(last_tick.get("best_ask", price + self.costs["spread"] / 2.0))
-            self.pending = {"side": side, "limit": limit, "placed_at": self.tick_count}
+            self.pending = {
+                "side": side,
+                "limit": limit,
+                "placed_at": self.tick_count,
+                "replacements": 0,
+            }
             return
         half_spread = self.costs["spread"] / 2.0
         slip = self.costs["slippage"]
         stop_dist = self.money_manager.stop_distance(atr, self.atr_multiplier_sl)
+        atr_tp = atr * self.atr_multiplier_tp
+        if self.min_tp_fee_multiple > 0:
+            taker_rate = self.costs.get("commission_rate", 0.0)
+            round_trip = 2 * taker_rate * price + half_spread + slip
+            atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
         if side == LONG:
             entry = price + half_spread + slip
             stop = entry - stop_dist
-            tp = entry + stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+            tp = entry + atr_tp
         else:
             entry = price - half_spread - slip
             stop = entry + stop_dist
-            tp = entry - stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+            tp = entry - atr_tp
         self.capital -= self._fees(entry, qty)
         self.position = Trade(side, t_index, entry, qty, stop, tp)
 
@@ -291,12 +306,17 @@ class LivePaperTradingLoop:
             if qty > 0:
                 stop_dist = self.money_manager.stop_distance(atr, self.atr_multiplier_sl)
                 entry = order["limit"]
+                atr_tp = atr * self.atr_multiplier_tp
+                if self.min_tp_fee_multiple > 0:
+                    exit_rate = self.costs.get("maker_fee_rate", 0.0) if self.execution == "maker" else self.costs.get("commission_rate", 0.0)
+                    round_trip = (self.costs.get("maker_fee_rate", 0.0) + exit_rate) * entry
+                    atr_tp = max(atr_tp, self.min_tp_fee_multiple * round_trip)
                 if order["side"] == LONG:
                     stop = entry - stop_dist
-                    tp = entry + stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+                    tp = entry + atr_tp
                 else:
                     stop = entry + stop_dist
-                    tp = entry - stop_dist * (self.atr_multiplier_tp / self.atr_multiplier_sl)
+                    tp = entry - atr_tp
                 self.capital -= self._fees(
                     entry, qty, fee_rate=self.costs.get("maker_fee_rate", 0.0)
                 )
@@ -304,8 +324,21 @@ class LivePaperTradingLoop:
                 self.maker_fills += 1
             self.pending = None
         elif self.tick_count - order["placed_at"] >= self.maker_timeout_ticks:
-            self.pending = None
-            self.maker_cancels += 1
+            if order["replacements"] < self.maker_replacements_max:
+                step = self.costs["spread"]
+                last_tick = self.raw_history[-1] if self.raw_history else {}
+                if order["side"] == LONG:
+                    ask_ref = float(last_tick.get("best_ask", price + self.costs["spread"]))
+                    order["limit"] = min(order["limit"] + step, ask_ref)
+                else:
+                    bid_ref = float(last_tick.get("best_bid", price - self.costs["spread"]))
+                    order["limit"] = max(order["limit"] - step, bid_ref)
+                order["placed_at"] = self.tick_count
+                order["replacements"] += 1
+                self.maker_replacements += 1
+            else:
+                self.pending = None
+                self.maker_cancels += 1
 
     def _current_atr(self):
         frame = self._build_frame()
@@ -360,6 +393,7 @@ class LivePaperTradingLoop:
             "execution": self.execution,
             "maker_fills": self.maker_fills,
             "maker_cancels": self.maker_cancels,
+            "maker_replacements": self.maker_replacements,
         }
         if hasattr(self.feed, "reconnect_count"):
             result["reconnect_count"] = self.feed.reconnect_count

@@ -2,12 +2,35 @@
 
 ## 1. Collecter des ticks réels (BTC, sans clé API)
 
+### Collecte courte (test)
 ```bash
 python3 binance_collector.py --duration 600 --out btc_real_ticks.csv
 ```
-Collecte le carnet d'ordres Binance (20 niveaux) + les trades agrégés, au format
-du pipeline. Pour un entraînement sérieux : viser plusieurs heures
-(`--duration 3600`), idéalement sur plusieurs sessions différentes.
+
+### Collecte longue — la commande recommandée (`collect_long.py`)
+Découpage automatique en segments de 7,5 min (aucune perte si interruption),
+reprise après crash, concaténation finale automatique :
+```bash
+# 24 heures de collecte
+python3 collect_long.py --hours 24 --out btc_24h.csv
+
+# Reprise après une interruption (Ctrl-C, veille, crash)
+python3 collect_long.py --hours 24 --out btc_24h.csv --resume
+
+# Concatener seulement les segments déjà collectés
+python3 collect_long.py --hours 24 --out btc_24h.csv --concat-only
+```
+
+### En arrière-plan sur Mac (immune à la fermeture du terminal)
+```bash
+caffeinate -is nohup python3 collect_long.py --hours 24 --out btc_24h.csv > collecte.log 2>&1 &
+tail -f collecte.log        # suivre la progression
+```
+`caffeinate` empêche la mise en veille du Mac ; les segments sont
+sauvegardés au fil de l'eau dans `btc_24h_segments/`.
+
+Pour un entraînement sérieux : viser plusieurs heures, idéalement sur
+plusieurs sessions différentes (ouverture US, nuit, annonce macro).
 
 ## 2. Préparer vos annotations (trades issus de vos vidéos)
 

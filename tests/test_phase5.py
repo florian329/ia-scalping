@@ -417,5 +417,34 @@ class TestExportExcel(unittest.TestCase):
                 colored += 1
         self.assertEqual(colored, report["n_trades"])
 
+
+class TestCollectLong(unittest.TestCase):
+    def test_segments_et_reprise(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from collect_long import concatenate, existing_segments, segments_dir
+
+        tmp = Path(tempfile.mkdtemp())
+        out = tmp / "collecte.csv"
+        directory = segments_dir(out)
+        directory.mkdir(parents=True)
+        for i in range(1, 4):
+            pd.DataFrame(
+                {
+                    "timestamp": [f"2026-01-05 00:0{i-1}:00+00:00"],
+                    "last_price": [76000.0 + i],
+                    "last_volume": [1.0],
+                }
+            ).to_csv(directory / f"seg_BTCUSDT_{i:04d}.csv", index=False)
+
+        segs = existing_segments(directory, "BTCUSDT")
+        self.assertEqual(len(segs), 3)
+        df = concatenate(directory, "BTCUSDT", out)
+        self.assertEqual(len(df), 3)
+        self.assertTrue(out.exists())
+        shutil.rmtree(tmp)
+
 if __name__ == "__main__":
     unittest.main()

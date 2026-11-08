@@ -30,7 +30,7 @@ import torch
 from pandas import DataFrame
 
 from candle_features import BOOK_FEATURES, SEQ_FEATURES, _build_seq_windows
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import DecimalParameter, IStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,46 @@ class IaScalpingStrategy(IStrategy):
         "stoploss_on_exchange": False,
     }
 
-    prob_threshold = 0.4
+    entry_threshold = DecimalParameter(
+        0.30, 0.70, default=0.40, space="entry", optimize=True
+    )
+
+    @property
+    def protections(self):
+        return [
+            {
+                "method": "CooldownPeriod",
+                "stop_duration_candles": 5,
+            },
+            {
+                "method": "StoplossGuard",
+                "lookback_period_candles": 60,
+                "trade_limit": 4,
+                "stop_duration_candles": 30,
+                "only_per_pair": False,
+            },
+            {
+                "method": "MaxDrawdown",
+                "lookback_period_candles": 240,
+                "trade_limit": 5,
+                "max_allowed_drawdown": 0.05,
+                "stop_duration_candles": 60,
+            },
+        ]
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self._model = None
         self._norm_stats = None
+        self._load_model()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_model"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
         self._load_model()
 
     def _load_model(self) -> None:
@@ -153,13 +187,13 @@ class IaScalpingStrategy(IStrategy):
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (dataframe["model_action"] == 1)
-            & (dataframe["model_prob_long"] > self.prob_threshold)
+            & (dataframe["model_prob_long"] > self.entry_threshold.value)
             & (dataframe["volume"] > 0),
             "enter_long",
         ] = 1
         dataframe.loc[
             (dataframe["model_action"] == 2)
-            & (dataframe["model_prob_short"] > self.prob_threshold)
+            & (dataframe["model_prob_short"] > self.entry_threshold.value)
             & (dataframe["volume"] > 0),
             "enter_short",
         ] = 1

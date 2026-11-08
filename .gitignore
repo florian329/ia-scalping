@@ -4,3 +4,5 @@ __pycache__/
 *.png
 *.csv
 .pytest_cache/
+user_data/
+freqtrade_integration/model/

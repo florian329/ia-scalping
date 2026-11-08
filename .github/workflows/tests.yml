@@ -31,3 +31,5 @@ jobs:
         run: python tests/test_phase5.py
       - name: Golden test (non-regression numerique)
         run: python tests/test_golden.py
+      - name: Tests integration FreqTrade (sautes si freqtrade absent)
+        run: python tests/test_freqtrade_integration.py

@@ -115,6 +115,16 @@ structurellement la stratégie de la viabilité.
 - **Golden test** (`tests/test_golden.py`) : métriques gelées d'un scénario déterministe — toute dérive de comportement du backtest casse le CI.
 - **Typage** : annotations sur les modules noyau (config, execution, backtester).
 
+## Intégration FreqTrade + FreqUI (`freqtrade_integration/`)
+
+Le pipeline branché sur le moteur **FreqTrade** avec l'interface **FreqUI** :
+- `IaScalpingStrategy.py` — le modèle PyTorch en stratégie FreqTrade (interface v3,
+  shorts, entrées limites maker) ;
+- `train_candle_model.py` — entraînement sur candles OHLCV (labellisation > frais) ;
+- `config_ia_scalping.json` — Binance futures BTC/USDT, dry-run, FreqUI sur 127.0.0.1:8080 ;
+- validé de bout en bout sur données réelles : 76 trades backtestés par le moteur FreqTrade.
+- Voir `freqtrade_integration/README.md` pour l'installation complète.
+
 ## Tests
 
 ```bash
@@ -124,7 +134,7 @@ python3 tests/test_improvements.py  # 13 tests : filtres, RL, PPO, feeds, journa
 python3 tests/test_phase4.py       # 14 tests : walk-forward, bootstrap, protections, labels pondérés, multi-segments
 python3 tests/test_phase5.py       # 16 tests : vectorisation, drift, annotations, calibration, tuning, nouvelles features
 ```
-69 tests au total, tous verts (dont le golden test de non-régression).
+74 tests au total, tous verts (dont le golden test de non-régression et l'intégration FreqTrade).
 
 ## Usage
 

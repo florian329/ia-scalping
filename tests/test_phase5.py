@@ -61,11 +61,13 @@ class TestVectorizedBacktest(unittest.TestCase):
         self.assertEqual(seq_report["n_trades"], vec_report["n_trades"])
         self.assertAlmostEqual(seq_report["final_capital"], vec_report["final_capital"], places=6)
 
-    def test_plus_rapide_que_le_sequentiel(self):
+    def test_plus_rapide_avec_un_vrai_modele(self):
         import time
 
-        df = make_df(98000.0 + np.arange(3000) * 0.5)
-        model = ConstantModel(1)
+        torch.manual_seed(0)
+        model = ScalpingMultimodalNet(order_book_dim=ORDER_BOOK_DIM, sequence_dim=SEQUENCE_DIM, hidden_dim=32)
+        model.eval()
+        df = make_df(98000.0 + np.arange(1500) * 0.5)
         run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=False)
         run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=True)
         t0 = time.perf_counter()
@@ -74,7 +76,7 @@ class TestVectorizedBacktest(unittest.TestCase):
         t0 = time.perf_counter()
         run_backtest(model, df, asset="BTC", max_holding_ticks=10, vectorized=True)
         t_vec = time.perf_counter() - t0
-        self.assertLess(t_vec, t_seq * 2)
+        self.assertLess(t_vec, t_seq)
 
 
 class TestDriftMonitors(unittest.TestCase):

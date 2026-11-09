@@ -90,6 +90,17 @@ class TestStrategy(unittest.TestCase):
         self.assertIn("exit_long", out.columns)
         self.assertIn("exit_short", out.columns)
 
+    def test_levier_plafonne_par_exchange(self):
+        strat = self._strategy()
+        self.assertEqual(strat.leverage_value, 1.0)
+        demande = strat.leverage("BTC/USDT:USDT", None, 76000.0, 1.0, 125.0, None, "long")
+        self.assertEqual(demande, 1.0)
+        strat.leverage_value = 10.0
+        demande = strat.leverage("BTC/USDT:USDT", None, 76000.0, 1.0, 125.0, None, "long")
+        self.assertEqual(demande, 10.0)
+        demande = strat.leverage("BTC/USDT:USDT", None, 76000.0, 1.0, 5.0, None, "short")
+        self.assertEqual(demande, 5.0)
+
     def test_sans_modele_aucun_signal(self):
         from IaScalpingStrategy import IaScalpingStrategy
 

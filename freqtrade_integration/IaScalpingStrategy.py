@@ -63,6 +63,18 @@ class IaScalpingStrategy(IStrategy):
         "stoploss_on_exchange": False,
     }
 
+    # Levier futures : 1.0 par defaut (prudent). A augmenter UNIQUEMENT apres
+    # un verdict statistique positif (hyperopt_holdout.py / run_validation.py).
+    # Rappel : le levier multiplie gains, pertes ET frais — x10 avec un stoploss
+    # de -2 % = -20 % du stake par trade perdant.
+    leverage_value: float = 1.0
+
+    def leverage(self, pair: str, current_time, current_rate: float,
+                 proposed_leverage: float, max_leverage: float,
+                 entry_tag, side: str, **kwargs) -> float:
+        """Levier demande, plafonne par la limite reelle de l'exchange."""
+        return min(self.leverage_value, max_leverage)
+
     entry_threshold = DecimalParameter(
         0.30, 0.70, default=0.40, space="entry", optimize=True
     )

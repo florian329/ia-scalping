@@ -82,6 +82,21 @@ python freqtrade_integration/hyperopt_holdout.py \
 Validation sandbox (2026-11-08) : train +1,64 % (36 trades) vs holdout −0,04 % (1 trade)
 → verdict « SURAJUSTEMENT ». Le système vous protège de vous-même.
 
+## Levier futures (`leverage_value`)
+
+Par défaut la stratégie trade en **x1** (prudent). Le levier se règle via l'attribut
+`leverage_value` de la stratégie (plafonné automatiquement par la limite réelle de
+l'exchange) :
+
+```python
+leverage_value: float = 1.0   # dans IaScalpingStrategy.py
+```
+
+⚠️ **Le levier multiplie tout** : gains, pertes ET frais. Un x10 avec le stoploss
+par défaut (−2 %) = −20 % du stake par trade perdant. Ne l'augmentez (x2-x3 d'abord)
+**qu'après** un verdict positif de `hyperopt_holdout.py` ou `run_validation.py`.
+Changer la valeur nécessite de redémarrer le bot.
+
 ## Protections intégrées (stratégie)
 
 - **CooldownPeriod** (5 candles) : pause après chaque trade ;

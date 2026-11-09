@@ -8,6 +8,7 @@ Corrections vs version initiale :
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -47,7 +48,12 @@ def train_model(
     class_weights=None,
     patience=5,
     seed=42,
+    checkpoint_path="best_scalping_model.pth",
 ):
+    if epochs < 1 or not len(train_loader.dataset) or not len(val_loader.dataset):
+        raise ValueError("Training requires epochs >= 1 and nonempty train/validation sets")
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+    model.to(device)
     torch.manual_seed(seed)
     np.random.seed(seed)
     if class_weights is None:
@@ -56,7 +62,7 @@ def train_model(
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     criterion_no_reduction = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    checkpoint_manager = ScalpingModelCheckpoint()
+    checkpoint_manager = ScalpingModelCheckpoint(checkpoint_path)
     epochs_without_improvement = 0
 
     for epoch in range(1, epochs + 1):
@@ -101,4 +107,7 @@ def train_model(
             if epochs_without_improvement >= patience:
                 logger.info("Early stopping a l'epoque %d (patience=%d)", epoch, patience)
                 break
+    best = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(best["model_state_dict"])
+    model.eval()
     return checkpoint_manager.best_loss

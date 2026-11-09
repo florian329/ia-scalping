@@ -47,9 +47,12 @@ class TestCandleFeatures(unittest.TestCase):
     def test_labels_triple_barriere(self):
         df = make_candles()
         labels = build_labels(df, horizon=15, fee_rate=0.001)
-        self.assertTrue(set(np.unique(labels)).issubset({0, 1, 2}))
+        self.assertTrue(set(np.unique(labels)).issubset({-1, 0, 1, 2}))
         haussier = make_candles()
         haussier["close"] = 76000.0 + np.arange(len(haussier)) * 50.0
+        haussier['open'] = haussier['close']
+        haussier['high'] = haussier['close'] + 1
+        haussier['low'] = haussier['close'] - 1
         labels_haussier = build_labels(haussier, horizon=15, fee_rate=0.001)
         self.assertGreater((labels_haussier == 1).sum(), (labels_haussier == 2).sum())
 

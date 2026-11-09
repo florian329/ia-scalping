@@ -17,19 +17,7 @@ jobs:
       - name: Installer les dependances CPU
         run: |
           python -m pip install --upgrade pip
-          pip install numpy pandas scikit-learn matplotlib scipy openpyxl
+          pip install numpy pandas scikit-learn matplotlib scipy openpyxl freqtrade==2026.10
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Tests backtester + money management
-        run: python tests/test_backtester.py
-      - name: Tests filtres / RL / PPO / feeds / journal
-        run: python tests/test_improvements.py
-      - name: Tests connecteurs + boucle live
-        run: python tests/test_phase3.py
-      - name: Tests validation statistique + protections
-        run: python tests/test_phase4.py
-      - name: Tests phase 5 (vectorisation, drift, annotations, calibration, tuning)
-        run: python tests/test_phase5.py
-      - name: Golden test (non-regression numerique)
-        run: python tests/test_golden.py
-      - name: Tests integration FreqTrade (sautes si freqtrade absent)
-        run: python tests/test_freqtrade_integration.py
+      - name: Suite complete (incluant moteur FreqTrade et integrite entrainement)
+        run: python -m unittest discover -s tests

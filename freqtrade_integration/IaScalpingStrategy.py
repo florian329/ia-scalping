@@ -29,7 +29,6 @@ import numpy as np
 import torch
 from pandas import DataFrame
 
-from candle_features import BOOK_FEATURES, SEQ_FEATURES, _build_seq_windows
 from freqtrade.strategy import DecimalParameter, IStrategy
 
 logger = logging.getLogger(__name__)
@@ -37,6 +36,10 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from freqtrade_integration.candle_features import BOOK_FEATURES, SEQ_FEATURES
+from freqtrade_integration.candle_training import infer_probabilities
+from freqtrade_integration.candle_policy import CandlePolicy
 
 MODEL_DIR = Path(__file__).parent / "model"
 MODEL_PATH = MODEL_DIR / "candle_model.pth"
@@ -50,7 +53,7 @@ class IaScalpingStrategy(IStrategy):
     timeframe = "1m"
     can_short = True
     process_only_new_candles = True
-    startup_candle_count = 60
+    startup_candle_count = 80
 
     minimal_roi = {"0": 0.02, "30": 0.01, "60": 0.005}
     stoploss = -0.02
@@ -65,8 +68,8 @@ class IaScalpingStrategy(IStrategy):
 
     # Levier futures : 1.0 par defaut (prudent). A augmenter UNIQUEMENT apres
     # un verdict statistique positif (hyperopt_holdout.py / run_validation.py).
-    # Rappel : le levier multiplie gains, pertes ET frais — x10 avec un stoploss
-    # de -2 % = -20 % du stake par trade perdant.
+    # FreqTrade interprete le stoploss comme risque sur marge : a x10,
+    # -2 % de stop correspond a environ -0,2 % de mouvement du sous-jacent, hors frais.
     leverage_value: float = 1.0
 
     def leverage(self, pair: str, current_time, current_rate: float,
@@ -81,6 +84,8 @@ class IaScalpingStrategy(IStrategy):
 
     @property
     def protections(self):
+        if self._policy is not None:
+            return self._policy.protections()
         return [
             {
                 "method": "CooldownPeriod",
@@ -106,6 +111,12 @@ class IaScalpingStrategy(IStrategy):
         super().__init__(config)
         self._model = None
         self._norm_stats = None
+        self._norm = None
+        self._feature_version = 1
+        self._policy = None
+        self._temperature = 1.0
+        self._thresholds = None
+        self._artifact_dir = config.get('ia_model_dir') or os.environ.get('IA_SCALPING_MODEL_DIR')
         self._load_model()
 
     def __getstate__(self):
@@ -118,16 +129,18 @@ class IaScalpingStrategy(IStrategy):
         self._load_model()
 
     def _load_model(self) -> None:
-        if not MODEL_PATH.exists():
+        model_path = Path(self._artifact_dir) / 'candle_model.pth' if self._artifact_dir else MODEL_PATH
+        norm_path = model_path.parent / 'norm_stats.json' if self._artifact_dir else NORM_STATS_PATH
+        if not model_path.exists():
             logger.warning(
                 "Modele introuvable (%s) : la strategie n'emettra aucun signal. "
                 "Lancez freqtrade_integration/train_candle_model.py d'abord.",
-                MODEL_PATH,
+                model_path,
             )
             return
         from model_pytorch import ScalpingMultimodalNet
 
-        ckpt = torch.load(MODEL_PATH, map_location="cpu")
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=True)
         state = ckpt.get("model_state_dict", ckpt)
         book_dim = int(ckpt.get("book_dim", len(BOOK_FEATURES)))
         seq_dim = int(ckpt.get("seq_dim", len(SEQ_FEATURES)))
@@ -136,82 +149,69 @@ class IaScalpingStrategy(IStrategy):
         model.load_state_dict(state)
         model.eval()
         self._model = model
-        if NORM_STATS_PATH.exists():
-            with open(NORM_STATS_PATH) as f:
-                stats = json.load(f)
-            self._norm_stats = (np.array(stats["mean"]), np.array(stats["std"]))
+        self._feature_version = int(ckpt.get('feature_version', 1))
+        if norm_path.exists():
+            stats = json.loads(norm_path.read_text())
+            self._norm_stats = (np.asarray(stats['mean']), np.asarray(stats['std']))
+            self._norm = {'book_mean': stats['mean'], 'book_std': stats['std']}
+            if self._feature_version == 2:
+                self._norm.update(seq_mean=stats['seq_mean'], seq_std=stats['seq_std'])
+        if self._norm is None:
+            raise ValueError('Missing training normalization; refusing inference')
+        if self._feature_version == 2:
+            self._policy = CandlePolicy.from_dict(ckpt['execution_policy'])
+            self.stoploss = self._policy.stoploss
+            self.minimal_roi = {str(t): roi for t, roi in self._policy.roi_steps}
+            self.leverage_value = self._policy.leverage
+            decision_path = model_path.parent / 'decision.json'
+            if not decision_path.exists():
+                raise ValueError('Candidate has no validation-only calibration and thresholds')
+            decision = json.loads(decision_path.read_text())
+            self._temperature = float(decision['temperature'])
+            self._thresholds = {side: float(decision['thresholds'][side]) for side in ('long', 'short')}
+            if self._temperature <= 0 or any(not 0 <= v <= 1 for v in self._thresholds.values()):
+                raise ValueError('Invalid calibration or directional thresholds')
         logger.info("Modele candle charge (book_dim=%d, seq_dim=%d)", book_dim, seq_dim)
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         df = dataframe.copy()
-        close = df["close"].astype(float)
-        volume = df["volume"].astype(float)
-
-        df["ret_1"] = np.log(close / close.shift(1))
-        for w in (10, 30, 60):
-            df[f"log_ret_{w}"] = np.log(close / close.shift(w))
-        typical = (df["high"] + df["low"] + df["close"]) / 3.0
-        vwap = (typical * volume).cumsum() / (volume.cumsum() + 1e-12)
-        df["vwap_dev"] = (close - vwap) / (vwap + 1e-12)
-        tr = np.maximum(
-            df["high"] - df["low"],
-            np.maximum(abs(df["high"] - close.shift(1)), abs(df["low"] - close.shift(1))),
-        )
-        df["atr_norm"] = tr.rolling(14).mean() / (close + 1e-12)
-        df["vol_z"] = (volume - volume.rolling(60).mean()) / (volume.rolling(60).std() + 1e-12)
-        df["vol_change"] = volume.pct_change()
-        df["vol_mom"] = (volume * np.sign(df["ret_1"].fillna(0))).rolling(10).sum()
-        df["range_ratio"] = (close - df["low"]) / (df["high"] - df["low"] + 1e-12)
-        hour = df["date"].dt.hour + df["date"].dt.minute / 60.0
-        angle = 2 * np.pi * hour / 24.0
-        df["hour_sin"] = np.sin(angle)
-        df["hour_cos"] = np.cos(angle)
-
         if self._model is None:
-            df["model_action"] = 0
-            df["model_prob_long"] = 0.0
-            df["model_prob_short"] = 0.0
+            df['model_action'] = 0
+            df['model_prob_long'] = 0.0
+            df['model_prob_short'] = 0.0
             return df
-
-        valid = df.dropna(subset=SEQ_FEATURES + BOOK_FEATURES).index
-        book = df.loc[valid, BOOK_FEATURES].to_numpy(dtype=np.float32)
-        if self._norm_stats is not None:
-            mean, std = self._norm_stats
-            book = (book - mean) / (std + 1e-8)
-        seq = df.loc[valid, SEQ_FEATURES].to_numpy(dtype=np.float32)
-
-        actions = np.zeros(len(df), dtype=np.int64)
-        probs = np.zeros((len(df), 3), dtype=np.float32)
-        if len(valid) > 0:
-            with torch.no_grad():
-                book_t = torch.tensor(book, dtype=torch.float32)
-                seq_windows = _build_seq_windows(seq)
-                seq_t = torch.tensor(seq_windows)
-                logits = self._model(book_t, seq_t)
-                chunk_probs = torch.softmax(logits, dim=1).numpy()
-                actions[valid] = chunk_probs.argmax(axis=1)
-                probs[valid] = chunk_probs
-        df["model_action"] = actions
-        df["model_prob_long"] = probs[:, 1]
-        df["model_prob_short"] = probs[:, 2]
+        probs = infer_probabilities(self._model, df, self._norm,
+                                    feature_version=self._feature_version,
+                                    temperature=self._temperature)
+        df['model_action'] = probs.argmax(axis=1)
+        df['model_prob_long'] = probs[:, 1]
+        df['model_prob_short'] = probs[:, 2]
         return df
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe['enter_long'] = 0
+        dataframe['enter_short'] = 0
+        long_threshold = self._thresholds['long'] if self._thresholds else self.entry_threshold.value
+        short_threshold = self._thresholds['short'] if self._thresholds else self.entry_threshold.value
         dataframe.loc[
             (dataframe["model_action"] == 1)
-            & (dataframe["model_prob_long"] > self.entry_threshold.value)
+            & (dataframe["model_prob_long"] > long_threshold)
             & (dataframe["volume"] > 0),
             "enter_long",
         ] = 1
         dataframe.loc[
             (dataframe["model_action"] == 2)
-            & (dataframe["model_prob_short"] > self.entry_threshold.value)
+            & (dataframe["model_prob_short"] > short_threshold)
             & (dataframe["volume"] > 0),
             "enter_short",
         ] = 1
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        if self._policy is not None:
+            dataframe['exit_long'] = 0
+            dataframe['exit_short'] = 0
+            return dataframe
         dataframe.loc[
             (dataframe["model_action"] != 1) & (dataframe["volume"] > 0),
             "exit_long",
@@ -221,3 +221,10 @@ class IaScalpingStrategy(IStrategy):
             "exit_short",
         ] = 1
         return dataframe
+
+    def custom_exit(self, pair, trade, current_time, current_rate, current_profit, **kwargs):
+        if self._policy is not None:
+            minutes = (current_time - trade.open_date_utc).total_seconds() / 60
+            if minutes >= self._policy.horizon:
+                return 'policy_timeout'
+        return None

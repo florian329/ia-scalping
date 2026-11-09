@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 user_data/
 freqtrade_integration/model/
+
+# Isolated validation artifacts and execution notes
+/outputs/
+/.superpowers/
+/.venv/

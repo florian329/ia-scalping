@@ -1,5 +1,9 @@
 # Intégration FreqTrade + FreqUI
 
+> Nouveau parcours : [entraînement corrigé et validation chronologique](VALIDATION.md).
+> Les commandes historiques ci-dessous décrivent l’intégration initiale ; utiliser
+> le nouveau parcours pour les candidats v2 et préciser un dossier `--out` neuf.
+
 Le pipeline ia-scalping branché sur le **moteur FreqTrade** avec l'interface **FreqUI** :
 le modèle PyTorch (ScalpingMultimodalNet) devient une stratégie FreqTrade, FreqUI fournit
 le dashboard (trades, courbe de profit, positions ouvertes, logs, contrôles).

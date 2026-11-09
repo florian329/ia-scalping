@@ -19,8 +19,10 @@ BOOK_FEATURES = ["vol_z", "vwap_dev", "atr_norm", "hour_sin", "hour_cos", "vol_c
 SEQ_FEATURES = ["log_ret_10", "log_ret_30", "log_ret_60", "vol_mom", "ret_1"]
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, version: int = 2) -> pd.DataFrame:
     """Features candle : proxies des features tick du pipeline ia-scalping."""
+    if version not in (1, 2):
+        raise ValueError("Unknown feature version")
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
     out = pd.DataFrame(index=df.index)
@@ -29,7 +31,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     for w in (10, 30, 60):
         out[f"log_ret_{w}"] = np.log(close / close.shift(w))
     typical = (df["high"] + df["low"] + df["close"]) / 3.0
-    vwap = (typical * volume).cumsum() / (volume.cumsum() + 1e-12)
+    vwap = ((typical * volume).cumsum() / (volume.cumsum() + 1e-12) if version == 1
+            else (typical * volume).rolling(60).sum() / (volume.rolling(60).sum() + 1e-12))
     out["vwap_dev"] = (close - vwap) / (vwap + 1e-12)
     tr = np.maximum(
         df["high"] - df["low"],
@@ -39,6 +42,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     out["vol_z"] = (volume - volume.rolling(60).mean()) / (volume.rolling(60).std() + 1e-12)
     out["vol_change"] = volume.pct_change()
     out["vol_mom"] = (volume * np.sign(out["ret_1"].fillna(0))).rolling(10).sum()
+    if version == 2:
+        out["vol_mom"] /= volume.rolling(10).sum() + 1e-12
     out["range_ratio"] = (close - df["low"]) / (df["high"] - df["low"] + 1e-12)
     hour = out["date"].dt.hour + out["date"].dt.minute / 60.0
     angle = 2 * np.pi * hour / 24.0
